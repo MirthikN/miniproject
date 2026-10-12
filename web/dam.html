@@ -1,0 +1,140 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dam dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css"></head><body>
+<div class="app">
+<aside><div class="brand">Dam dashboard</div><div id="nav"></div><div class="grp">Session</div><a href="index.html">Switch user</a></aside>
+<main id="main"></main></div><div id="toast"></div>
+<script src="js/api.js"></script>
+<script>
+const T = {
+  overview: { group: 'Monitor', title: 'Overview' },
+  sources: { group: 'Setup', title: 'Water sources', path: '/sources',
+    cols: [['ID','sourceId'],['Name','sourceName'],['Capacity (L)','totalCapacity'],['Remaining (L)','remainingWater']],
+    form: ['Add water source', [['sourceId','Source ID'],['sourceName','Name'],['totalCapacity','Capacity (L)','number']], 'Add source'] },
+  areas: { group: 'Setup', title: 'Distribution areas', path: '/areas',
+    cols: [['ID','areaId'],['Name','areaName'],['Type','type'],['Population','population'],['Daily demand (L)','dailyDemand'],['Last supply day','lastSupplyDay'],['Last delivered (L)','lastDeliveredAmount']],
+    form: ['Add distribution area', [['areaId','Area ID'],['areaName','Name'],['type','Type','select',['RESIDENTIAL','INSTITUTIONAL']],['population','Population','number'],['dailyDemand','Daily demand (L)','number']], 'Add area'] },
+  pipelines: { group: 'Setup', title: 'Pipelines', path: '/pipelines',
+    cols: [['ID','pipelineId'],['From','fromId'],['To','toId'],['Status','status'],['Note','lastNote']],
+    act: p => (p.status === 'WORKING' ? `<button class="sm" data-a="fail" data-id="${esc(p.pipelineId)}">Mark failed</button>`
+      : `<button class="sm" data-a="repair" data-id="${esc(p.pipelineId)}">Repair</button>`) + `<button class="sm" data-a="remove" data-id="${esc(p.pipelineId)}">Remove</button>`,
+    form: ['Add pipeline', [['pipelineId','Pipeline ID'],['fromId','From (location ID)'],['toId','To (location ID)']], 'Add pipeline'] },
+  requests: { group: 'Monitor', title: 'Water requests', path: '/requests',
+    cols: [['Request','requestId'],['Area','areaId'],['Required (L)','requiredWater'],['Emergency','emergency'],['Priority','priority'],['Allocated (L)','allocatedWater'],['Unmet (L)','unmetWater'],['Status','status']] },
+  distribute: { group: 'Operate', title: 'Distribute water' },
+  maintenance: { group: 'Operate', title: 'Maintenance requests', path: '/maintenance',
+    cols: [['ID','maintenanceId'],['Pipeline','pipelineId'],['Issue','issue'],['Status','status']] },
+  map: { group: 'Monitor', title: 'Network map' }
+};
+let cur = 'overview';
+const nav = $('#nav');
+['Monitor', 'Setup', 'Operate'].forEach(g => {
+  nav.insertAdjacentHTML('beforeend', `<div class="grp">${g}</div>`);
+  Object.entries(T).filter(([k, t]) => t.group === g).forEach(([k, t]) => nav.insertAdjacentHTML('beforeend', `<button data-t="${k}">${t.title}</button>`));
+});
+nav.onclick = e => { if (e.target.dataset.t) show(e.target.dataset.t); };
+
+async function show(k) {
+  cur = k; const t = T[k];
+  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.t === k));
+  let h = `<h1>${t.title}</h1>`;
+  if (k === 'overview') h += await overview();
+  else if (k === 'distribute') h += await distribute();
+  else if (k === 'map') h += await networkMap();
+  else {
+    if (t.form) h += `<div class="panel"><h2>${t.form[0]}</h2>${formHtml('add', t.form[1], t.form[2])}</div>`;
+    const rows = await run(() => api(t.path));
+    h += `<div class="panel">${table(t.cols, rows, t.act)}</div>`;
+  }
+  $('#main').innerHTML = h;
+  if ($('#add')) $('#add').onsubmit = async e => {
+    e.preventDefault();
+    if (await run(() => api(t.path, 'POST', formData(e.target)), 'Saved')) show(k);
+  };
+  if ($('#iv')) $('#iv').onsubmit = async e => { e.preventDefault(); await run(() => api('/interval', 'POST', formData(e.target)), 'Supply interval saved'); };
+  if ($('#go')) $('#go').onclick = async () => {
+    const r = await run(() => api('/distribute', 'POST'), 'Distribution finished');
+    if (r) show(cur);
+  };
+}
+$('#main').onclick = async e => {
+  const a = e.target.dataset.a, id = e.target.dataset.id; if (!a) return;
+  if (a === 'fail') { const r = prompt('Reason for failure?'); if (r) await run(() => api(`/pipelines/${id}/fail`, 'POST', { reason: r }), 'Pipeline marked failed'); }
+  if (a === 'repair') { const r = prompt('Repair details?'); if (r) await run(() => api(`/pipelines/${id}/repair`, 'POST', { details: r }), 'Pipeline repaired'); }
+  if (a === 'remove' && confirm('Remove pipeline ' + id + '?')) await run(() => api(`/pipelines/${id}`, 'DELETE'), 'Pipeline removed');
+  show(cur);
+};
+
+async function overview() {
+  const [s, a, p, r, c, m, h] = await Promise.all(['/sources','/areas','/pipelines','/requests','/connectivity','/maintenance','/history'].map(x => run(() => api(x))));
+  if (!s) return '<p class="muted">No data. Start the backend and reload.</p>';
+  const sum = (l, k) => l.reduce((n, x) => n + x[k], 0);
+  const rem = sum(s, 'remainingWater'), cap = sum(s, 'totalCapacity');
+  const failed = p.filter(x => x.status === 'FAILED').length, working = p.length - failed;
+  const pend = r.filter(x => x.status === 'PENDING'), dis = (c && c.disconnected) || [];
+  const openM = m.filter(x => x.status === 'OPEN').length;
+  const low = s.filter(x => x.totalCapacity && x.remainingWater / x.totalCapacity < 0.2);
+  const al = [];
+  if (dis.length) al.push(['bad', `${dis.length} area(s) cannot reach any source: ${dis.join(', ')}`]);
+  if (failed) al.push(['bad', `${failed} pipeline(s) are failed`]);
+  low.forEach(x => al.push(['warn', `${x.sourceName} is below 20% (${x.remainingWater.toLocaleString()} L left)`]));
+  if (openM) al.push(['warn', `${openM} open maintenance request(s)`]);
+  if (pend.length) al.push(['warn', `${pend.length} request(s) waiting for distribution`]);
+  const alerts = al.length ? al.map(x => `<div class="alert ${x[0] === 'bad' ? 'bad' : ''}">${esc(x[1])}</div>`).join('') : '<div class="alert ok">All systems normal.</div>';
+  const bars = s.map(x => { const pc = x.totalCapacity ? Math.round(100 * x.remainingWater / x.totalCapacity) : 0;
+    return `<div class="lv"><div class="t"><span>${esc(x.sourceName)}</span><span>${x.remainingWater.toLocaleString()} / ${x.totalCapacity.toLocaleString()} L (${pc}%)</span></div><div class="track"><div class="fill ${pc < 20 ? 'low' : pc < 50 ? 'mid' : ''}" style="width:${pc}%"></div></div></div>`; }).join('') || '<p class="muted">No sources yet.</p>';
+  const name = {}; a.forEach(x => name[x.areaId] = x.areaName);
+  const rank = { CRITICAL: 0, HIGH: 1, NORMAL: 2 };
+  const queue = [...pend].sort((x, y) => rank[x.priority] - rank[y.priority]).map(x =>
+    `<div class="q"><span>${esc(x.requestId)} - ${esc(name[x.areaId] || x.areaId)} (${x.requiredWater.toLocaleString()} L)</span>${badge(x.priority)}</div>`).join('') || '<p class="muted">No requests waiting.</p>';
+  const mx = Math.max(1, ...a.map(x => Math.max(x.dailyDemand, x.lastDeliveredAmount)));
+  const dem = a.map(x => `<div class="dr">${esc(x.areaName)}<div class="track"><div class="fill dem" style="width:${100 * x.dailyDemand / mx}%"></div></div><div class="track"><div class="fill del" style="width:${100 * x.lastDeliveredAmount / mx}%"></div></div></div>`).join('') || '<p class="muted">No areas yet.</p>';
+  const cols = { ALLOCATED: '#2e8b57', PARTIALLY_ALLOCATED: '#b8892b', PENDING: '#1f8fb5', REJECTED: '#c0392b' };
+  const cnt = {}; r.forEach(x => cnt[x.status] = (cnt[x.status] || 0) + 1);
+  let acc = 0; const stops = Object.keys(cnt).map(k => { const f = acc, t = acc += 100 * cnt[k] / r.length; return `${cols[k] || '#999'} ${f}% ${t}%`; }).join(',');
+  const donut = r.length ? `<div class="leg"><div class="donut" style="background:conic-gradient(${stops})"><i>${r.length}</i></div><ul>${Object.keys(cnt).map(k => `<li><span class="dot" style="background:${cols[k] || '#999'}"></span>${k.replace('_', ' ').toLowerCase()}: ${cnt[k]}</li>`).join('')}</ul></div>` : '<p class="muted">No requests yet.</p>';
+  const act = (h || []).slice(-5).reverse().map(x => `<li>${esc(x)}</li>`).join('') || '<li class="muted">No allocations yet.</li>';
+  return `<div class="cards">
+    <div class="stat"><b>${rem.toLocaleString()} L</b>left of ${cap.toLocaleString()} L</div>
+    <div class="stat"><b>${a.length}</b>areas (${sum(a, 'population').toLocaleString()} people)</div>
+    <div class="stat warn"><b>${pend.length}</b>pending requests</div>
+    <div class="stat bad"><b>${failed}</b>failed pipelines</div>
+    <div class="stat warn"><b>${openM}</b>open maintenance</div></div>
+    ${alerts}
+    <div class="panel" style="margin-top:1rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap"><div><h2 style="margin:0">Run distribution</h2><span class="muted">${pend.length} request(s) in the queue</span></div><button class="b big" id="go">Distribute water</button></div>
+    <div class="grid2">
+      <div class="panel"><h2>Source levels</h2>${bars}</div>
+      <div class="panel"><h2>Request queue (priority order)</h2>${queue}</div>
+      <div class="panel"><h2>Daily demand vs last delivered</h2><div class="muted" style="font-size:.82rem;margin-bottom:.5rem"><span class="dot" style="background:var(--water)"></span>demand <span class="dot" style="background:var(--ok);margin-left:.6rem"></span>last delivered</div>${dem}</div>
+      <div class="panel"><h2>Requests by status</h2>${donut}<h2 style="margin-top:1.1rem">Pipeline health</h2>
+        <div class="split"><div style="width:${p.length ? 100 * working / p.length : 0}%;background:var(--ok)"></div><div style="flex:1;background:var(--bad)"></div></div>
+        <p class="muted" style="margin:.3rem 0 0;font-size:.88rem">${working} working, ${failed} failed</p></div>
+      <div class="panel"><h2>Recent activity</h2><ul class="log">${act}</ul></div>
+    </div>`;
+}
+async function distribute() {
+  const hist = (await run(() => api('/history'))) || [];
+  return `<div class="panel"><h2>Normal supply interval</h2>${formHtml('iv', [['interval','Days between supplies','number']], 'Save interval')}</div>
+    <div class="panel"><h2>Run allocation</h2><p class="muted">Serves queued requests in priority order: critical, then high, then normal.</p>
+    <button class="b big" id="go">Distribute water</button></div>
+    <div class="panel"><h2>Allocation history</h2>${hist.length ? '<ul class="log">' + hist.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : '<p class="muted">No allocations yet.</p>'}</div>`;
+}
+async function networkMap() {
+  const [s, a, p, c] = await Promise.all(['/sources','/areas','/pipelines','/connectivity'].map(x => run(() => api(x))));
+  if (!s) return '<p class="muted">No data. Start the backend and reload.</p>';
+  const dis = new Set((c && c.disconnected) || []);
+  const nodes = [...s.map(x => ({ id: x.sourceId, name: x.sourceName, src: 1 })), ...a.map(x => ({ id: x.areaId, name: x.areaName }))];
+  const W = 760, H = 460, R = Math.min(W, H) / 2 - 60, pos = {};
+  nodes.forEach((n, i) => { const t = 2 * Math.PI * i / nodes.length - Math.PI / 2; pos[n.id] = [W / 2 + R * 1.3 * Math.cos(t), H / 2 + R * Math.sin(t)]; });
+  const lines = p.filter(x => pos[x.fromId] && pos[x.toId]).map(x => { const [x1, y1] = pos[x.fromId], [x2, y2] = pos[x.toId], bad = x.status === 'FAILED';
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${bad ? '#c0392b' : '#1f8fb5'}" stroke-width="3" ${bad ? 'stroke-dasharray="6 5"' : ''}><title>${esc(x.pipelineId)}: ${x.status}</title></line>`; }).join('');
+  const dots = nodes.map(n => { const [x, y] = pos[n.id], bad = dis.has(n.id);
+    return (n.src ? `<rect x="${x-14}" y="${y-14}" width="28" height="28" fill="#0f2a33"/>` : `<circle cx="${x}" cy="${y}" r="15" fill="#fff" stroke="${bad ? '#c0392b' : '#b8892b'}" stroke-width="${bad ? 4 : 3}"/>`)
+      + `<text x="${x}" y="${y + 32}" text-anchor="middle">${esc(n.name)}</text>`; }).join('');
+  return `<div class="panel"><p class="muted">Squares are sources. Circles are areas; a red ring means the area cannot reach any source. Dashed red lines are failed pipelines.</p>
+    <svg class="map" viewBox="0 0 ${W} ${H}" role="img" aria-label="Water network map">${lines}${dots}</svg></div>`;
+}
+show('overview');
+</script></body></html>

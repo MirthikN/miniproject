@@ -1,0 +1,31 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Municipal dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css"></head><body>
+<div class="app">
+<aside><div class="brand">Municipal</div><div class="grp" id="who"></div><a href="index.html">Switch user</a></aside>
+<main id="main"></main></div><div id="toast"></div>
+<script src="js/api.js"></script>
+<script>
+const areaId = sessionStorage.getItem('areaId');
+if (!areaId) location.href = 'index.html';
+$('#who').textContent = 'Area ' + areaId;
+async function load() {
+  const [areas, req, src, hist] = await Promise.all([`/areas`, `/requests?areaId=${encodeURIComponent(areaId)}`, '/sources', `/history?areaId=${encodeURIComponent(areaId)}`].map(x => run(() => api(x))));
+  const me = (areas || []).find(a => a.areaId === areaId);
+  $('#main').innerHTML = `<h1>${esc(me ? me.areaName : areaId)}</h1>
+  <p class="muted">${me ? `${esc(me.type)} | population ${me.population} | daily demand ${me.dailyDemand} L` : ''}</p>
+  <div class="panel"><h2>Current day</h2>${formHtml('day', [['day','Day number','number']], 'Set day')}</div>
+  <div class="panel"><h2>Request water</h2>${formHtml('rq', [['requiredWater','Water needed (L)','number'],['emergency','Emergency','checkbox']], 'Send request')}</div>
+  <div class="panel"><h2>Report a pipeline failure</h2>${formHtml('fl', [['pipelineId','Pipeline ID'],['reason','What happened']], 'Report failure')}</div>
+  <div class="panel"><h2>My requests</h2>${table([['Request','requestId'],['Required (L)','requiredWater'],['Emergency','emergency'],['Priority','priority'],['Allocated (L)','allocatedWater'],['Unmet (L)','unmetWater'],['Status','status']], req)}</div>
+  <div class="panel"><h2>Water sources</h2>${table([['Source','sourceName'],['Remaining (L)','remainingWater'],['Capacity (L)','totalCapacity']], src)}</div>
+  <div class="panel"><h2>Allocation history</h2>${hist && hist.length ? '<ul class="log">' + hist.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : '<p class="muted">No allocations for your area yet.</p>'}</div>`;
+  const bind = (id, fn, ok) => $(id).onsubmit = async e => { e.preventDefault(); if (await run(() => fn(formData(e.target)), ok)) load(); };
+  bind('#day', d => api('/day', 'POST', d), 'Day updated');
+  bind('#rq', d => api('/requests', 'POST', { ...d, areaId }), 'Request sent');
+  bind('#fl', d => api(`/pipelines/${encodeURIComponent(d.pipelineId)}/fail`, 'POST', { reason: d.reason, reportedBy: areaId }), 'Failure reported');
+}
+load();
+</script></body></html>
