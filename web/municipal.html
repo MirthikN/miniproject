@@ -12,8 +12,7 @@ const areaId = sessionStorage.getItem('areaId');
 if (!areaId) location.href = 'index.html';
 $('#who').textContent = 'Area ' + areaId;
 async function load() {
-  const [areas, req, src, hist] = await Promise.all([`/areas`, `/requests?areaId=${encodeURIComponent(areaId)}`, '/sources', `/history?areaId=${encodeURIComponent(areaId)}`].map(x => run(() => api(x))));
-  const me = (areas || []).find(a => a.areaId === areaId);
+  const [me, req, src, hist] = await Promise.all([`/areas/${encodeURIComponent(areaId)}`, `/requests?areaId=${encodeURIComponent(areaId)}`, '/sources', `/history?areaId=${encodeURIComponent(areaId)}`].map(x => run(() => api(x))));
   $('#main').innerHTML = `<h1>${esc(me ? me.areaName : areaId)}</h1>
   <p class="muted">${me ? `${esc(me.type)} | population ${me.population} | daily demand ${me.dailyDemand} L` : ''}</p>
   <div class="panel"><h2>Current day</h2>${formHtml('day', [['day','Day number','number']], 'Set day')}</div>

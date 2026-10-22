@@ -17,6 +17,10 @@ public class Server {
     static final ArrayList<WaterRequest> requestHistory = new ArrayList<>();
     static final HashMap<String, WaterRequest> requestMap = new HashMap<>();
     static final ArrayDeque<MaintenanceRequest> maintenance = new ArrayDeque<>();
+    // Open maintenance requests: priority 1 (institutional) before priority 2 (residential), then first come first served.
+    static final PriorityQueue<MaintenanceRequest> maintQueue = new PriorityQueue<>(
+            Comparator.comparingInt(MaintenanceRequest::getPriority)
+                      .thenComparingInt(MaintenanceRequest::getSeqNo));
     static final WaterNetwork network = new WaterNetwork();
     static final WaterAllocationPolicy policy = new WaterAllocationPolicy();
 
@@ -82,7 +86,10 @@ public class Server {
         String out;
         switch (s[0]) {
             case "sources":     out = m.equals("POST") ? addSource(body) : arr(sources, Server::jSource); break;
-            case "areas":       out = m.equals("POST") ? addArea(body) : arr(areaList, Server::jArea); break;
+            case "areas":
+                if (s.length == 2 && m.equals("GET")) out = oneArea(s[1]);   // single area, used by municipal sign-in
+                else out = m.equals("POST") ? addArea(body) : arr(areaList, Server::jArea);
+                break;
             case "pipelines":
                 if (s.length == 1) out = m.equals("POST") ? addPipeline(body) : arr(network.getPipelineList(), Server::jPipe);
                 else if (m.equals("DELETE")) out = removePipeline(s[1]);
@@ -94,7 +101,7 @@ public class Server {
             case "distribute":  out = distribute(); break;
             case "connectivity": out = "{\"disconnected\":" + arr(network.getAffectedAreas(areaIds(), sourceIds()), Server::q) + "}"; break;
             case "history":     out = arr(history(qs.get("areaId")), Server::q); break;
-            case "maintenance": out = arr(maintenance, Server::jMaint); break;
+            case "maintenance": out = arr(maintView(), Server::jMaint); break;
             case "interval":    out = setInterval(body); break;
             case "day":         out = setDay(body); break;
             default: throw new ApiError("Unknown endpoint: " + p);
@@ -158,6 +165,32 @@ public class Server {
         return OK;
     }
 
+    // Priority 1 if either end of the pipeline is an institutional area, otherwise 2.
+    static String oneArea(String id) {
+        DistributionArea a = areaMap.get(id);
+        if (a == null) throw new ApiError("Area ID not found.");
+        return jArea(a);
+    }
+
+    static int maintPriority(String pid) {
+        Pipeline p = network.getPipeline(pid);
+        if (p == null) return 2;
+        DistributionArea a = areaMap.get(p.getFromId()), b = areaMap.get(p.getToId());
+        boolean inst = (a != null && a.getType().equals("INSTITUTIONAL"))
+                    || (b != null && b.getType().equals("INSTITUTIONAL"));
+        return inst ? 1 : 2;
+    }
+
+    // Open requests most urgent first, then completed ones.
+    static ArrayList<MaintenanceRequest> maintView() {
+        ArrayList<MaintenanceRequest> list = new ArrayList<>();
+        PriorityQueue<MaintenanceRequest> copy = new PriorityQueue<>(maintQueue);
+        while (!copy.isEmpty()) list.add(copy.poll());
+        for (MaintenanceRequest m : maintenance)
+            if (m.getStatus() == MaintenanceRequest.Status.COMPLETED) list.add(m);
+        return list;
+    }
+
     static String fail(String pid, Map<String, String> b) {
         Pipeline p = network.getPipeline(pid);
         if (p == null) throw new ApiError("Rejected: pipeline not found.");
@@ -166,7 +199,10 @@ public class Server {
             throw new ApiError("Rejected: this pipeline is not connected to your area (" + by + ").");
         String reason = req(b, "reason");
         if (!network.failPipeline(pid, reason)) throw new ApiError("Rejected: pipeline is not WORKING.");
-        maintenance.add(new MaintenanceRequest("M" + (++maintCounter), pid, "Failure: " + reason));
+        MaintenanceRequest mr = new MaintenanceRequest("M" + (++maintCounter), pid, "Failure: " + reason);
+        mr.setPriority(maintPriority(pid));
+        maintenance.add(mr);
+        maintQueue.add(mr);
         return "{\"ok\":true,\"disconnected\":" + arr(network.getAffectedAreas(areaIds(), sourceIds()), Server::q) + "}";
     }
 
@@ -175,6 +211,7 @@ public class Server {
         if (!network.repairPipeline(pid, details)) throw new ApiError("Rejected: pipeline not found or not FAILED.");
         for (MaintenanceRequest m : maintenance)
             if (m.getPipelineId().equals(pid) && m.getStatus() == MaintenanceRequest.Status.OPEN) m.complete();
+        maintQueue.removeIf(q -> q.getPipelineId().equals(pid));
         MaintenanceRequest done = new MaintenanceRequest("M" + (++maintCounter), pid, "Repair: " + details);
         done.complete();
         maintenance.add(done);
@@ -260,7 +297,8 @@ public class Server {
             }
             for (Object[] r : DB.rows("SELECT maint_id,pipeline_id,issue,status FROM maintenance_request ORDER BY ord")) {
                 MaintenanceRequest m = new MaintenanceRequest((String) r[0], (String) r[1], (String) r[2]);
-                if (r[3].equals("COMPLETED")) m.complete();
+                m.setPriority(maintPriority(m.getPipelineId()));
+                if (r[3].equals("COMPLETED")) m.complete(); else maintQueue.add(m);
                 maintenance.add(m);
             }
             for (Object[] r : DB.rows("SELECT message FROM allocation_history ORDER BY id")) policy.getAllocationHistory().add((String) r[0]);
@@ -301,7 +339,7 @@ public class Server {
     }
     static String jMaint(MaintenanceRequest m) {
         return "{" + kv("maintenanceId", m.getMaintenanceId()) + "," + kv("pipelineId", m.getPipelineId()) + ","
-                + kv("issue", m.getIssue()) + "," + kv("status", m.getStatus().name()) + "}";
+                + kv("issue", m.getIssue()) + "," + kv("priority", m.getPriority()) + "," + kv("status", m.getStatus().name()) + "}";
     }
 
     static String req(Map<String, String> b, String k) {

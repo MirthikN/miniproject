@@ -20,7 +20,7 @@ body{margin:0;font-family:"IBM Plex Sans",system-ui,sans-serif;color:#14212b;bac
 .head h2{margin:0;font-size:1.1rem;font-weight:600}
 .btn{display:block;width:100%;box-sizing:border-box;font:500 .95rem "IBM Plex Sans",sans-serif;text-align:center;text-decoration:none;color:#fff;background:#0f5c8a;border:0;border-radius:4px;padding:.7rem 1rem;cursor:pointer;transition:background .15s}
 .btn:hover{background:#0b4a70}.m .btn{background:#3d5262}.m .btn:hover{background:#2c3e4b}
-select{display:block;width:100%;box-sizing:border-box;font:inherit;font-size:.95rem;padding:.65rem .8rem;margin-bottom:.7rem;border:1px solid #b9c5cd;border-radius:4px;background:#fff;color:#14212b}
+select,input[type=text]{display:block;width:100%;box-sizing:border-box;font:inherit;font-size:.95rem;padding:.65rem .8rem;margin-bottom:.7rem;border:1px solid #b9c5cd;border-radius:4px;background:#fff;color:#14212b}
 :focus-visible{outline:2px solid #0f5c8a;outline-offset:2px}
 @media(max-width:820px){.page{grid-template-columns:1fr}.brand{padding:2.5rem 1.5rem}.access{padding:2rem 1.5rem 3rem}}
 @media(prefers-reduced-motion:reduce){.portal,.btn{transition:none}}
@@ -37,17 +37,20 @@ select{display:block;width:100%;box-sizing:border-box;font:inherit;font-size:.95
     </section>
     <section class="portal m" aria-labelledby="m">
       <div class="head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21V7l8-4 8 4v14"/><path d="M9 21v-6h6v6M9 10h.01M15 10h.01"/></svg><h2 id="m">Municipal User</h2></div>
-      <form id="mf"><select id="areas" aria-label="Select your area" required><option value="">Loading areas...</option></select><button class="btn">Sign in</button></form>
+      <form id="mf"><input type="text" id="areaId" placeholder="Enter your Area ID" aria-label="Area ID" autocomplete="off" required><button class="btn">Sign in</button></form>
     </section>
   </main>
 </div>
 <div id="toast"></div>
 <script src="js/api.js"></script>
 <script>
-(async () => {
-  const a = await run(() => api('/areas'));
-  $('#areas').innerHTML = a ? '<option value="">Select your area</option>' + a.map(x => `<option value="${esc(x.areaId)}">${esc(x.areaId)} - ${esc(x.areaName)}</option>`).join('')
-    : '<option value="">No areas available</option>';
-})();
-$('#mf').onsubmit = e => { e.preventDefault(); const v = $('#areas').value; if (!v) return toast('Please select your area first.', true); sessionStorage.setItem('areaId', v); location.href = 'municipal.html'; };
+$('#mf').onsubmit = async e => {
+  e.preventDefault();
+  const id = $('#areaId').value.trim();
+  if (!id) return toast('Please enter your Area ID.', true);
+  const a = await run(() => api('/areas/' + encodeURIComponent(id)));   // checks this one ID only
+  if (!a) return;                                                       // run() already showed the error
+  sessionStorage.setItem('areaId', a.areaId);
+  location.href = 'municipal.html';
+};
 </script></body></html>

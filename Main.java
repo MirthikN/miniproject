@@ -15,6 +15,10 @@ public class Main {
     private static final ArrayList<WaterRequest> requestHistory = new ArrayList<>();
     private static final HashMap<String, WaterRequest> requestMap = new HashMap<>();
     private static final ArrayDeque<MaintenanceRequest> maintenance = new ArrayDeque<>();
+    // Open maintenance requests: priority 1 (institutional) before priority 2 (residential), then first come first served.
+    private static final PriorityQueue<MaintenanceRequest> maintQueue = new PriorityQueue<>(
+            Comparator.comparingInt(MaintenanceRequest::getPriority)
+                      .thenComparingInt(MaintenanceRequest::getSeqNo));
 
     private static final WaterNetwork network = new WaterNetwork();
     private static final WaterAllocationPolicy policy = new WaterAllocationPolicy();
@@ -288,6 +292,16 @@ public class Main {
         System.out.println(any ? "Area is connected." : "Area is currently disconnected.");
     }
 
+    // Priority 1 if either end of the pipeline is an institutional area, otherwise 2.
+    private static int maintPriority(String pid) {
+        Pipeline p = network.getPipeline(pid);
+        if (p == null) return 2;
+        DistributionArea a = areaMap.get(p.getFromId()), b = areaMap.get(p.getToId());
+        boolean inst = (a != null && a.getType().equals("INSTITUTIONAL"))
+                    || (b != null && b.getType().equals("INSTITUTIONAL"));
+        return inst ? 1 : 2;
+    }
+
     private static void reportFailure(DistributionArea myArea) {
         String pid = readNonEmpty("Pipeline ID: ");
         Pipeline p = network.getPipeline(pid);
@@ -300,7 +314,10 @@ public class Main {
         if (!network.failPipeline(pid, reason)) {
             System.out.println("Rejected: pipeline not found or not WORKING."); return;
         }
-        maintenance.add(new MaintenanceRequest("M" + (++maintCounter), pid, "Failure: " + reason));
+        MaintenanceRequest mr = new MaintenanceRequest("M" + (++maintCounter), pid, "Failure: " + reason);
+        mr.setPriority(maintPriority(pid));
+        maintenance.add(mr);
+        maintQueue.add(mr);
         System.out.println("Pipeline " + pid + " marked FAILED. Maintenance request created.");
         ArrayList<String> affected = network.getAffectedAreas(areaIds(), sourceIds());
         System.out.println(affected.isEmpty() ? "All areas still have a path to a source."
@@ -315,6 +332,7 @@ public class Main {
         }
         for (MaintenanceRequest m : maintenance)
             if (m.getPipelineId().equals(pid) && m.getStatus() == MaintenanceRequest.Status.OPEN) m.complete();
+        maintQueue.removeIf(q -> q.getPipelineId().equals(pid));
         MaintenanceRequest done = new MaintenanceRequest("M" + (++maintCounter), pid, "Repair: " + details);
         done.complete();
         maintenance.add(done);
@@ -327,7 +345,12 @@ public class Main {
 
     private static void viewMaintenance() {
         if (maintenance.isEmpty()) { System.out.println("No maintenance requests."); return; }
-        for (MaintenanceRequest m : maintenance) m.displayDetails();
+        System.out.println("--- OPEN (most urgent first) ---");
+        PriorityQueue<MaintenanceRequest> copy = new PriorityQueue<>(maintQueue);
+        while (!copy.isEmpty()) copy.poll().displayDetails();
+        System.out.println("--- COMPLETED ---");
+        for (MaintenanceRequest m : maintenance)
+            if (m.getStatus() == MaintenanceRequest.Status.COMPLETED) m.displayDetails();
     }
 
     private static void viewSources() {
