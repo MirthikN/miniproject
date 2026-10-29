@@ -1,30 +1,159 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Municipal dashboard</title>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css"></head><body>
-<div class="app">
-<aside><div class="brand">Municipal</div><div class="grp" id="who"></div><a href="index.html">Switch user</a></aside>
-<main id="main"></main></div><div id="toast"></div>
-<script src="js/api.js"></script>
-<script>
-const areaId = sessionStorage.getItem('areaId');
-if (!areaId) location.href = 'index.html';
-$('#who').textContent = 'Area ' + areaId;
-async function load() {
-  const [me, req, src, hist] = await Promise.all([`/areas/${encodeURIComponent(areaId)}`, `/requests?areaId=${encodeURIComponent(areaId)}`, '/sources', `/history?areaId=${encodeURIComponent(areaId)}`].map(x => run(() => api(x))));
-  $('#main').innerHTML = `<h1>${esc(me ? me.areaName : areaId)}</h1>
-  <p class="muted">${me ? `${esc(me.type)} | population ${me.population} | daily demand ${me.dailyDemand} L` : ''}</p>
-  <div class="panel"><h2>Current day</h2>${formHtml('day', [['day','Day number','number']], 'Set day')}</div>
-  <div class="panel"><h2>Request water</h2>${formHtml('rq', [['requiredWater','Water needed (L)','number'],['emergency','Emergency','checkbox']], 'Send request')}</div>
-  <div class="panel"><h2>Report a pipeline failure</h2>${formHtml('fl', [['pipelineId','Pipeline ID'],['reason','What happened']], 'Report failure')}</div>
-  <div class="panel"><h2>My requests</h2>${table([['Request','requestId'],['Required (L)','requiredWater'],['Emergency','emergency'],['Priority','priority'],['Allocated (L)','allocatedWater'],['Unmet (L)','unmetWater'],['Status','status']], req)}</div>
-  <div class="panel"><h2>Water sources</h2>${table([['Source','sourceName'],['Remaining (L)','remainingWater'],['Capacity (L)','totalCapacity']], src)}</div>
-  <div class="panel"><h2>Allocation history</h2>${hist && hist.length ? '<ul class="log">' + hist.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : '<p class="muted">No allocations for your area yet.</p>'}</div>`;
-  const bind = (id, fn, ok) => $(id).onsubmit = async e => { e.preventDefault(); if (await run(() => fn(formData(e.target)), ok)) load(); };
-  bind('#day', d => api('/day', 'POST', d), 'Day updated');
-  bind('#rq', d => api('/requests', 'POST', { ...d, areaId }), 'Request sent');
-  bind('#fl', d => api(`/pipelines/${encodeURIComponent(d.pipelineId)}/fail`, 'POST', { reason: d.reason, reportedBy: areaId }), 'Failure reported');
-}
-load();
-</script></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Municipal Dashboard - Smart Water Distribution</title>
+  <meta name="description" content="Municipal portal for submitting water requirements, monitoring delivery schedules, and reporting infrastructure issues.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="municipal-app">
+    <!-- Top Navigation Landmark -->
+    <header class="top-nav" role="banner">
+      <div class="brand-lockup">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--color-water)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 21V7l8-4 8 4v14"/>
+          <path d="M9 21v-6h6v6M9 10h.01M15 10h.01"/>
+        </svg>
+        <span class="brand-title">Municipal Area Console</span>
+        <span class="area-pill" id="who" aria-label="Current Area Identifier">Area Loading...</span>
+      </div>
+      <div class="nav-actions">
+        <a class="out" href="index.html">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+          Switch User
+        </a>
+      </div>
+    </header>
+
+    <!-- Main Content Landmark -->
+    <main id="main" tabindex="-1">
+      <div class="page-header">
+        <h1>Loading Municipal Telemetry...</h1>
+        <p>Retrieving registered area parameters and consumption status</p>
+      </div>
+    </main>
+  </div>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="js/api.js"></script>
+  <script>
+    const areaId = sessionStorage.getItem('areaId');
+    if (!areaId) {
+      location.href = 'index.html';
+    }
+    $('#who').textContent = 'Area ' + areaId;
+
+    async function load() {
+      // Immediate skeleton loading feedback
+      $('#main').innerHTML = `
+        <div class="page-header">
+          <h1>Area ${esc(areaId)}</h1>
+          <p class="muted">Loading municipal parameters and request history...</p>
+        </div>
+        ${skeletonCards(3)}
+        ${skeletonTable(3)}
+      `;
+
+      const [me, req, src, hist] = await Promise.all([
+        `/areas/${encodeURIComponent(areaId)}`,
+        `/requests?areaId=${encodeURIComponent(areaId)}`,
+        '/sources',
+        `/history?areaId=${encodeURIComponent(areaId)}`
+      ].map(x => run(() => api(x))));
+
+      const areaTitle = me ? esc(me.areaName) : `Area ${esc(areaId)}`;
+
+      $('#main').innerHTML = `
+        <div class="page-header">
+          <h1 class="big">${areaTitle}</h1>
+          <p class="muted">Municipal Area Code: <strong>${esc(areaId)}</strong></p>
+        </div>
+
+        ${me ? `
+          <div class="cards">
+            <div class="stat"><span>Zoning Type</span><b>${esc(me.type)}</b></div>
+            <div class="stat"><span>Registered Population</span><b>${Number(me.population || 0).toLocaleString()}</b></div>
+            <div class="stat"><span>Base Daily Demand</span><b>${Number(me.dailyDemand || 0).toLocaleString()} L</b></div>
+          </div>
+        ` : ''}
+
+        <!-- Operation Forms Row -->
+        <div class="panel">
+          <h2>Calendar Supply Day</h2>
+          <p class="muted">Update current calendar day index to synchronize demand calculation.</p>
+          ${formHtml('day', [['day', 'Calendar Day Number', 'number']], 'Set Operational Day')}
+        </div>
+
+        <div class="panel">
+          <h2>Submit Water Allocation Request</h2>
+          <p class="muted">Specify required distribution volume for your municipal area. Flag as emergency only for critical shortage.</p>
+          ${formHtml('rq', [['requiredWater', 'Water Needed (L)', 'number'], ['emergency', 'Urgent / Emergency Supply Request', 'checkbox']], 'Send Water Request')}
+        </div>
+
+        <div class="panel">
+          <h2>Report Pipeline Incident</h2>
+          <p class="muted">Notify dam engineers immediately of pipeline ruptures, abnormal pressure loss, or contamination.</p>
+          ${formHtml('fl', [['pipelineId', 'Pipeline ID (e.g. P1)'], ['reason', 'Incident Description & Severity']], 'Submit Incident Report')}
+        </div>
+
+        <!-- Data Tables -->
+        <div class="panel">
+          <h2>Area Request History</h2>
+          ${table([
+            ['Request ID', 'requestId'],
+            ['Required (L)', 'requiredWater'],
+            ['Emergency', 'emergency'],
+            ['Priority', 'priority'],
+            ['Allocated (L)', 'allocatedWater'],
+            ['Unmet (L)', 'unmetWater'],
+            ['Status', 'status']
+          ], req)}
+        </div>
+
+        <div class="panel">
+          <h2>Regional Water Sources</h2>
+          ${table([
+            ['Source Name', 'sourceName'],
+            ['Remaining (L)', 'remainingWater'],
+            ['Capacity (L)', 'totalCapacity']
+          ], src)}
+        </div>
+
+        <div class="panel">
+          <h2>Area Allocation Log</h2>
+          ${hist && hist.length
+            ? '<ul class="log">' + hist.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>'
+            : '<p class="muted">No allocation events recorded for this area yet.</p>'}
+        </div>
+      `;
+
+      // Helper to bind form submissions with loading/busy state
+      const bind = (id, fn, okMsg) => {
+        const formEl = $(id);
+        if (!formEl) return;
+        formEl.onsubmit = async e => {
+          e.preventDefault();
+          const submitBtn = e.target.querySelector('button[type="submit"]');
+          const data = formData(e.target);
+          const res = await run(() => fn(data), okMsg, submitBtn);
+          if (res) load();
+        };
+      };
+
+      bind('#day', d => api('/day', 'POST', d), 'Operational day updated');
+      bind('#rq', d => api('/requests', 'POST', { ...d, areaId }), 'Water request submitted');
+      bind('#fl', d => api(`/pipelines/${encodeURIComponent(d.pipelineId)}/fail`, 'POST', { reason: d.reason, reportedBy: areaId }), 'Incident reported to engineering');
+    }
+
+    load();
+  </script>
+</body>
+</html>

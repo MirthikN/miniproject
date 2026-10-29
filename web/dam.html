@@ -1,140 +1,655 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Dam dashboard</title>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css"></head><body>
-<div class="app">
-<aside><div class="brand">Dam dashboard</div><div id="nav"></div><div class="grp">Session</div><a href="index.html">Switch user</a></aside>
-<main id="main"></main></div><div id="toast"></div>
-<script src="js/api.js"></script>
-<script>
-const T = {
-  overview: { group: 'Monitor', title: 'Overview' },
-  sources: { group: 'Setup', title: 'Water sources', path: '/sources',
-    cols: [['ID','sourceId'],['Name','sourceName'],['Capacity (L)','totalCapacity'],['Remaining (L)','remainingWater']],
-    form: ['Add water source', [['sourceId','Source ID'],['sourceName','Name'],['totalCapacity','Capacity (L)','number']], 'Add source'] },
-  areas: { group: 'Setup', title: 'Distribution areas', path: '/areas',
-    cols: [['ID','areaId'],['Name','areaName'],['Type','type'],['Population','population'],['Daily demand (L)','dailyDemand'],['Last supply day','lastSupplyDay'],['Last delivered (L)','lastDeliveredAmount']],
-    form: ['Add distribution area', [['areaId','Area ID'],['areaName','Name'],['type','Type','select',['RESIDENTIAL','INSTITUTIONAL']],['population','Population','number'],['dailyDemand','Daily demand (L)','number']], 'Add area'] },
-  pipelines: { group: 'Setup', title: 'Pipelines', path: '/pipelines',
-    cols: [['ID','pipelineId'],['From','fromId'],['To','toId'],['Status','status'],['Note','lastNote']],
-    act: p => (p.status === 'WORKING' ? `<button class="sm" data-a="fail" data-id="${esc(p.pipelineId)}">Mark failed</button>`
-      : `<button class="sm" data-a="repair" data-id="${esc(p.pipelineId)}">Repair</button>`) + `<button class="sm" data-a="remove" data-id="${esc(p.pipelineId)}">Remove</button>`,
-    form: ['Add pipeline', [['pipelineId','Pipeline ID'],['fromId','From (location ID)'],['toId','To (location ID)']], 'Add pipeline'] },
-  requests: { group: 'Monitor', title: 'Water requests', path: '/requests',
-    cols: [['Request','requestId'],['Area','areaId'],['Required (L)','requiredWater'],['Emergency','emergency'],['Priority','priority'],['Allocated (L)','allocatedWater'],['Unmet (L)','unmetWater'],['Status','status']] },
-  distribute: { group: 'Operate', title: 'Distribute water' },
-  maintenance: { group: 'Operate', title: 'Maintenance requests', path: '/maintenance',
-    cols: [['ID','maintenanceId'],['Pipeline','pipelineId'],['Issue','issue'],['Status','status']] },
-  map: { group: 'Monitor', title: 'Network map' }
-};
-let cur = 'overview';
-const nav = $('#nav');
-['Monitor', 'Setup', 'Operate'].forEach(g => {
-  nav.insertAdjacentHTML('beforeend', `<div class="grp">${g}</div>`);
-  Object.entries(T).filter(([k, t]) => t.group === g).forEach(([k, t]) => nav.insertAdjacentHTML('beforeend', `<button data-t="${k}">${t.title}</button>`));
-});
-nav.onclick = e => { if (e.target.dataset.t) show(e.target.dataset.t); };
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dam Operations Dashboard - Smart Water Distribution</title>
+  <meta name="description" content="Centralized monitoring, automated allocation, and municipal dispatch control for regional water infrastructure.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- Mobile Header with Navigation Toggle -->
+  <header class="mobile-header" aria-label="Mobile Navigation Bar">
+    <div class="mobile-brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+      </svg>
+      <span>Dam Console</span>
+    </div>
+    <button class="menu-toggle" id="menu-toggle" aria-expanded="false" aria-controls="sidebar-nav" aria-label="Toggle navigation menu">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
+      <span>Menu</span>
+    </button>
+  </header>
 
-async function show(k) {
-  cur = k; const t = T[k];
-  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.t === k));
-  let h = `<h1>${t.title}</h1>`;
-  if (k === 'overview') h += await overview();
-  else if (k === 'distribute') h += await distribute();
-  else if (k === 'map') h += await networkMap();
-  else {
-    if (t.form) h += `<div class="panel"><h2>${t.form[0]}</h2>${formHtml('add', t.form[1], t.form[2])}</div>`;
-    const rows = await run(() => api(t.path));
-    h += `<div class="panel">${table(t.cols, rows, t.act)}</div>`;
-  }
-  $('#main').innerHTML = h;
-  if ($('#add')) $('#add').onsubmit = async e => {
-    e.preventDefault();
-    if (await run(() => api(t.path, 'POST', formData(e.target)), 'Saved')) show(k);
-  };
-  if ($('#iv')) $('#iv').onsubmit = async e => { e.preventDefault(); await run(() => api('/interval', 'POST', formData(e.target)), 'Supply interval saved'); };
-  if ($('#go')) $('#go').onclick = async () => {
-    const r = await run(() => api('/distribute', 'POST'), 'Distribution finished');
-    if (r) show(cur);
-  };
-}
-$('#main').onclick = async e => {
-  const a = e.target.dataset.a, id = e.target.dataset.id; if (!a) return;
-  if (a === 'fail') { const r = prompt('Reason for failure?'); if (r) await run(() => api(`/pipelines/${id}/fail`, 'POST', { reason: r }), 'Pipeline marked failed'); }
-  if (a === 'repair') { const r = prompt('Repair details?'); if (r) await run(() => api(`/pipelines/${id}/repair`, 'POST', { details: r }), 'Pipeline repaired'); }
-  if (a === 'remove' && confirm('Remove pipeline ' + id + '?')) await run(() => api(`/pipelines/${id}`, 'DELETE'), 'Pipeline removed');
-  show(cur);
-};
+  <div class="app">
+    <!-- Collapsible Sidebar Landmark -->
+    <aside class="sidebar" id="sidebar-nav" aria-label="Dam Operations Navigation">
+      <div class="brand">
+        <h2>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--color-water)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+          </svg>
+          Dam Console
+        </h2>
+        <span class="tagline">Smart Water Distribution</span>
+      </div>
+      <nav id="nav" role="navigation" aria-label="Sections"></nav>
+      <div class="sidebar-footer">
+        <a class="out" href="index.html">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+          Switch User
+        </a>
+      </div>
+    </aside>
 
-async function overview() {
-  const [s, a, p, r, c, m, h] = await Promise.all(['/sources','/areas','/pipelines','/requests','/connectivity','/maintenance','/history'].map(x => run(() => api(x))));
-  if (!s) return '<p class="muted">No data. Start the backend and reload.</p>';
-  const sum = (l, k) => l.reduce((n, x) => n + x[k], 0);
-  const rem = sum(s, 'remainingWater'), cap = sum(s, 'totalCapacity');
-  const failed = p.filter(x => x.status === 'FAILED').length, working = p.length - failed;
-  const pend = r.filter(x => x.status === 'PENDING'), dis = (c && c.disconnected) || [];
-  const openM = m.filter(x => x.status === 'OPEN').length;
-  const low = s.filter(x => x.totalCapacity && x.remainingWater / x.totalCapacity < 0.2);
-  const al = [];
-  if (dis.length) al.push(['bad', `${dis.length} area(s) cannot reach any source: ${dis.join(', ')}`]);
-  if (failed) al.push(['bad', `${failed} pipeline(s) are failed`]);
-  low.forEach(x => al.push(['warn', `${x.sourceName} is below 20% (${x.remainingWater.toLocaleString()} L left)`]));
-  if (openM) al.push(['warn', `${openM} open maintenance request(s)`]);
-  if (pend.length) al.push(['warn', `${pend.length} request(s) waiting for distribution`]);
-  const alerts = al.length ? al.map(x => `<div class="alert ${x[0] === 'bad' ? 'bad' : ''}">${esc(x[1])}</div>`).join('') : '<div class="alert ok">All systems normal.</div>';
-  const bars = s.map(x => { const pc = x.totalCapacity ? Math.round(100 * x.remainingWater / x.totalCapacity) : 0;
-    return `<div class="lv"><div class="t"><span>${esc(x.sourceName)}</span><span>${x.remainingWater.toLocaleString()} / ${x.totalCapacity.toLocaleString()} L (${pc}%)</span></div><div class="track"><div class="fill ${pc < 20 ? 'low' : pc < 50 ? 'mid' : ''}" style="width:${pc}%"></div></div></div>`; }).join('') || '<p class="muted">No sources yet.</p>';
-  const name = {}; a.forEach(x => name[x.areaId] = x.areaName);
-  const rank = { CRITICAL: 0, HIGH: 1, NORMAL: 2 };
-  const queue = [...pend].sort((x, y) => rank[x.priority] - rank[y.priority]).map(x =>
-    `<div class="q"><span>${esc(x.requestId)} - ${esc(name[x.areaId] || x.areaId)} (${x.requiredWater.toLocaleString()} L)</span>${badge(x.priority)}</div>`).join('') || '<p class="muted">No requests waiting.</p>';
-  const mx = Math.max(1, ...a.map(x => Math.max(x.dailyDemand, x.lastDeliveredAmount)));
-  const dem = a.map(x => `<div class="dr">${esc(x.areaName)}<div class="track"><div class="fill dem" style="width:${100 * x.dailyDemand / mx}%"></div></div><div class="track"><div class="fill del" style="width:${100 * x.lastDeliveredAmount / mx}%"></div></div></div>`).join('') || '<p class="muted">No areas yet.</p>';
-  const cols = { ALLOCATED: '#2e8b57', PARTIALLY_ALLOCATED: '#b8892b', PENDING: '#1f8fb5', REJECTED: '#c0392b' };
-  const cnt = {}; r.forEach(x => cnt[x.status] = (cnt[x.status] || 0) + 1);
-  let acc = 0; const stops = Object.keys(cnt).map(k => { const f = acc, t = acc += 100 * cnt[k] / r.length; return `${cols[k] || '#999'} ${f}% ${t}%`; }).join(',');
-  const donut = r.length ? `<div class="leg"><div class="donut" style="background:conic-gradient(${stops})"><i>${r.length}</i></div><ul>${Object.keys(cnt).map(k => `<li><span class="dot" style="background:${cols[k] || '#999'}"></span>${k.replace('_', ' ').toLowerCase()}: ${cnt[k]}</li>`).join('')}</ul></div>` : '<p class="muted">No requests yet.</p>';
-  const act = (h || []).slice(-5).reverse().map(x => `<li>${esc(x)}</li>`).join('') || '<li class="muted">No allocations yet.</li>';
-  return `<div class="cards">
-    <div class="stat"><b>${rem.toLocaleString()} L</b>left of ${cap.toLocaleString()} L</div>
-    <div class="stat"><b>${a.length}</b>areas (${sum(a, 'population').toLocaleString()} people)</div>
-    <div class="stat warn"><b>${pend.length}</b>pending requests</div>
-    <div class="stat bad"><b>${failed}</b>failed pipelines</div>
-    <div class="stat warn"><b>${openM}</b>open maintenance</div></div>
-    ${alerts}
-    <div class="panel" style="margin-top:1rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap"><div><h2 style="margin:0">Run distribution</h2><span class="muted">${pend.length} request(s) in the queue</span></div><button class="b big" id="go">Distribute water</button></div>
-    <div class="grid2">
-      <div class="panel"><h2>Source levels</h2>${bars}</div>
-      <div class="panel"><h2>Request queue (priority order)</h2>${queue}</div>
-      <div class="panel"><h2>Daily demand vs last delivered</h2><div class="muted" style="font-size:.82rem;margin-bottom:.5rem"><span class="dot" style="background:var(--water)"></span>demand <span class="dot" style="background:var(--ok);margin-left:.6rem"></span>last delivered</div>${dem}</div>
-      <div class="panel"><h2>Requests by status</h2>${donut}<h2 style="margin-top:1.1rem">Pipeline health</h2>
-        <div class="split"><div style="width:${p.length ? 100 * working / p.length : 0}%;background:var(--ok)"></div><div style="flex:1;background:var(--bad)"></div></div>
-        <p class="muted" style="margin:.3rem 0 0;font-size:.88rem">${working} working, ${failed} failed</p></div>
-      <div class="panel"><h2>Recent activity</h2><ul class="log">${act}</ul></div>
-    </div>`;
-}
-async function distribute() {
-  const hist = (await run(() => api('/history'))) || [];
-  return `<div class="panel"><h2>Normal supply interval</h2>${formHtml('iv', [['interval','Days between supplies','number']], 'Save interval')}</div>
-    <div class="panel"><h2>Run allocation</h2><p class="muted">Serves queued requests in priority order: critical, then high, then normal.</p>
-    <button class="b big" id="go">Distribute water</button></div>
-    <div class="panel"><h2>Allocation history</h2>${hist.length ? '<ul class="log">' + hist.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : '<p class="muted">No allocations yet.</p>'}</div>`;
-}
-async function networkMap() {
-  const [s, a, p, c] = await Promise.all(['/sources','/areas','/pipelines','/connectivity'].map(x => run(() => api(x))));
-  if (!s) return '<p class="muted">No data. Start the backend and reload.</p>';
-  const dis = new Set((c && c.disconnected) || []);
-  const nodes = [...s.map(x => ({ id: x.sourceId, name: x.sourceName, src: 1 })), ...a.map(x => ({ id: x.areaId, name: x.areaName }))];
-  const W = 760, H = 460, R = Math.min(W, H) / 2 - 60, pos = {};
-  nodes.forEach((n, i) => { const t = 2 * Math.PI * i / nodes.length - Math.PI / 2; pos[n.id] = [W / 2 + R * 1.3 * Math.cos(t), H / 2 + R * Math.sin(t)]; });
-  const lines = p.filter(x => pos[x.fromId] && pos[x.toId]).map(x => { const [x1, y1] = pos[x.fromId], [x2, y2] = pos[x.toId], bad = x.status === 'FAILED';
-    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${bad ? '#c0392b' : '#1f8fb5'}" stroke-width="3" ${bad ? 'stroke-dasharray="6 5"' : ''}><title>${esc(x.pipelineId)}: ${x.status}</title></line>`; }).join('');
-  const dots = nodes.map(n => { const [x, y] = pos[n.id], bad = dis.has(n.id);
-    return (n.src ? `<rect x="${x-14}" y="${y-14}" width="28" height="28" fill="#0f2a33"/>` : `<circle cx="${x}" cy="${y}" r="15" fill="#fff" stroke="${bad ? '#c0392b' : '#b8892b'}" stroke-width="${bad ? 4 : 3}"/>`)
-      + `<text x="${x}" y="${y + 32}" text-anchor="middle">${esc(n.name)}</text>`; }).join('');
-  return `<div class="panel"><p class="muted">Squares are sources. Circles are areas; a red ring means the area cannot reach any source. Dashed red lines are failed pipelines.</p>
-    <svg class="map" viewBox="0 0 ${W} ${H}" role="img" aria-label="Water network map">${lines}${dots}</svg></div>`;
-}
-show('overview');
-</script></body></html>
+    <!-- Main Content Landmark -->
+    <main id="main" tabindex="-1"></main>
+  </div>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="js/api.js"></script>
+  <script>
+    // Navigation and tab configuration
+    const T = {
+      overview: { group: 'Monitor', title: 'Dashboard', desc: 'Real-time telemetry, reservoir levels, and distribution readiness' },
+      map: { group: 'Monitor', title: 'Network map', desc: 'Geospatial network topology, pipeline status, and connectivity' },
+      requests: { group: 'Monitor', title: 'Water requests', desc: 'Incoming municipal demand queue and priority classification', path: '/requests',
+        cols: [['Request ID', 'requestId'], ['Area', 'areaId'], ['Required (L)', 'requiredWater'], ['Emergency', 'emergency'], ['Priority', 'priority'], ['Allocated (L)', 'allocatedWater'], ['Unmet (L)', 'unmetWater'], ['Status', 'status']] },
+      sources: { group: 'Setup', title: 'Water sources', desc: 'Regional supply reservoirs, maximum capacity, and telemetry', path: '/sources',
+        cols: [['Source ID', 'sourceId'], ['Source Name', 'sourceName'], ['Capacity (L)', 'totalCapacity'], ['Remaining (L)', 'remainingWater']],
+        form: ['Add Water Source', [['sourceId', 'Source ID'], ['sourceName', 'Source Name'], ['totalCapacity', 'Total Capacity (L)', 'number']], 'Add Source'] },
+      areas: { group: 'Setup', title: 'Distribution areas', desc: 'Registered residential and institutional consumption zones', path: '/areas',
+        cols: [['Area ID', 'areaId'], ['Area Name', 'areaName'], ['Type', 'type'], ['Population', 'population'], ['Daily Demand (L)', 'dailyDemand'], ['Last Supply Day', 'lastSupplyDay'], ['Last Delivered (L)', 'lastDeliveredAmount']],
+        form: ['Add Distribution Area', [['areaId', 'Area ID'], ['areaName', 'Area Name'], ['type', 'Area Type', 'select', ['RESIDENTIAL', 'INSTITUTIONAL']], ['population', 'Population', 'number'], ['dailyDemand', 'Daily Demand (L)', 'number']], 'Add Area'] },
+      pipelines: { group: 'Setup', title: 'Pipelines', desc: 'Distribution conveyance segments, health diagnostics, and repairs', path: '/pipelines',
+        cols: [['Pipeline ID', 'pipelineId'], ['From', 'fromId'], ['To', 'toId'], ['Status', 'status'], ['Note', 'lastNote']],
+        act: p => (p.status === 'WORKING'
+          ? `<button class="sm" data-a="fail" data-id="${esc(p.pipelineId)}" aria-label="Mark pipeline ${esc(p.pipelineId)} as failed">Mark failed</button>`
+          : `<button class="sm" data-a="repair" data-id="${esc(p.pipelineId)}" aria-label="Repair pipeline ${esc(p.pipelineId)}">Repair</button>`)
+          + `<button class="sm" data-a="remove" data-id="${esc(p.pipelineId)}" aria-label="Remove pipeline ${esc(p.pipelineId)}">Remove</button>`,
+        form: ['Add Pipeline Segment', [['pipelineId', 'Pipeline ID'], ['fromId', 'From (Location ID)'], ['toId', 'To (Location ID)']], 'Add Pipeline'] },
+      distribute: { group: 'Operate', title: 'Distribute water', desc: 'Execute automated priority allocation algorithm and interval configuration' },
+      maintenance: { group: 'Operate', title: 'Maintenance requests', desc: 'Reported pipeline incidents and field repair tracking', path: '/maintenance',
+        cols: [['ID', 'maintenanceId'], ['Pipeline', 'pipelineId'], ['Issue Description', 'issue'], ['Status', 'status']] }
+    };
+
+    let cur = 'overview';
+    const nav = $('#nav');
+
+    // Build categorized navigation links
+    ['Monitor', 'Setup', 'Operate'].forEach(g => {
+      nav.insertAdjacentHTML('beforeend', `<div class="grp">${esc(g)}</div>`);
+      Object.entries(T)
+        .filter(([k, t]) => t.group === g)
+        .forEach(([k, t]) => {
+          nav.insertAdjacentHTML('beforeend', `<button type="button" class="nav-item" data-t="${esc(k)}">${esc(t.title)}</button>`);
+        });
+    });
+
+    // Mobile menu toggle handling
+    const menuToggle = $('#menu-toggle');
+    const sidebar = $('#sidebar-nav');
+    menuToggle.onclick = () => {
+      const open = sidebar.classList.toggle('is-open');
+      menuToggle.setAttribute('aria-expanded', String(open));
+    };
+
+    nav.onclick = e => {
+      const target = e.target.closest('button[data-t]');
+      if (target) {
+        if (window.innerWidth <= 768) {
+          sidebar.classList.remove('is-open');
+          menuToggle.setAttribute('aria-expanded', 'false');
+        }
+        show(target.dataset.t);
+      }
+    };
+
+    /**
+     * Switch view and render tab contents with loading feedback
+     */
+    async function show(k) {
+      cur = k;
+      const t = T[k];
+      document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.t === k));
+      
+      // Immediate skeleton loading state for UX responsiveness
+      $('#main').innerHTML = `
+        <div class="page-header">
+          <h1>${esc(t.title)}</h1>
+          <p>${esc(t.desc)}</p>
+        </div>
+        ${k === 'overview' ? skeletonCards(6) + skeletonTable(4) : skeletonTable(4)}
+      `;
+
+      let contentHtml = '';
+      if (k === 'overview') {
+        contentHtml = await overview();
+      } else if (k === 'distribute') {
+        contentHtml = await distribute();
+      } else if (k === 'map') {
+        contentHtml = await networkMap();
+      } else {
+        let formPanel = '';
+        if (t.form) {
+          formPanel = `<div class="panel"><h2>${esc(t.form[0])}</h2>${formHtml('add', t.form[1], t.form[2])}</div>`;
+        }
+        const rows = await run(() => api(t.path));
+        contentHtml = `${formPanel}<div class="panel"><h2>${esc(t.title)} Data</h2>${table(t.cols, rows, t.act)}</div>`;
+      }
+
+      $('#main').innerHTML = `
+        <div class="page-header">
+          <h1>${esc(t.title)}</h1>
+          <p>${esc(t.desc)}</p>
+        </div>
+        ${contentHtml}
+      `;
+
+      // Form bindings with busy states
+      if ($('#add')) {
+        $('#add').onsubmit = async e => {
+          e.preventDefault();
+          const btn = e.target.querySelector('button[type="submit"]');
+          const res = await run(() => api(t.path, 'POST', formData(e.target)), 'Record saved successfully', btn);
+          if (res) show(k);
+        };
+      }
+
+      if ($('#iv')) {
+        $('#iv').onsubmit = async e => {
+          e.preventDefault();
+          const btn = e.target.querySelector('button[type="submit"]');
+          await run(() => api('/interval', 'POST', formData(e.target)), 'Supply interval updated successfully', btn);
+        };
+      }
+
+      if ($('#go')) {
+        $('#go').onclick = async e => {
+          const btn = e.target;
+          const r = await run(() => api('/distribute', 'POST'), 'Water distribution completed successfully', btn);
+          if (r) show(cur);
+        };
+      }
+    }
+
+    // Main action delegate (Accessible Modals replacing native prompt & confirm)
+    $('#main').onclick = async e => {
+      const btn = e.target.closest('button[data-a]');
+      if (!btn) return;
+      const a = btn.dataset.a;
+      const id = btn.dataset.id;
+      if (!a || !id) return;
+
+      if (a === 'fail') {
+        const reason = await modalPrompt({
+          title: `Report Failure: Pipeline ${id}`,
+          label: 'Describe the cause of failure:',
+          placeholder: 'e.g. Ruptured joint, pressure drop, valve jam',
+          okText: 'Mark as Failed'
+        });
+        if (reason) {
+          await run(() => api(`/pipelines/${encodeURIComponent(id)}/fail`, 'POST', { reason }), 'Pipeline marked as failed', btn);
+          show(cur);
+        }
+      } else if (a === 'repair') {
+        const details = await modalPrompt({
+          title: `Complete Repair: Pipeline ${id}`,
+          label: 'Provide repair and maintenance notes:',
+          placeholder: 'e.g. Replaced 10m ductile iron section, seal tested OK',
+          okText: 'Confirm Repair'
+        });
+        if (details) {
+          await run(() => api(`/pipelines/${encodeURIComponent(id)}/repair`, 'POST', { details }), 'Pipeline repaired and operational', btn);
+          show(cur);
+        }
+      } else if (a === 'remove') {
+        const ok = await modalConfirm({
+          title: 'Delete Pipeline Segment',
+          message: `Are you sure you want to permanently remove pipeline segment "${id}"? This may disconnect downstream areas.`,
+          okText: 'Delete Pipeline',
+          danger: true
+        });
+        if (ok) {
+          await run(() => api(`/pipelines/${encodeURIComponent(id)}`, 'DELETE'), 'Pipeline segment deleted', btn);
+          show(cur);
+        }
+      }
+    };
+
+    /**
+     * Dashboard Overview View with charts, alerts, and reservoir levels
+     */
+    async function overview() {
+      const [s, a, p, r, c, m, h] = await Promise.all([
+        '/sources', '/areas', '/pipelines', '/requests', '/connectivity', '/maintenance', '/history'
+      ].map(x => run(() => api(x))));
+
+      if (!s) {
+        return `<div class="empty-state">
+          <p class="muted">Cannot load telemetry data. Please ensure the backend server is active and reachable.</p>
+        </div>`;
+      }
+
+      const sum = (list, key) => (list || []).reduce((acc, item) => acc + (item[key] || 0), 0);
+      const rem = sum(s, 'remainingWater');
+      const cap = sum(s, 'totalCapacity');
+      const failed = (p || []).filter(x => x.status === 'FAILED').length;
+      const working = (p || []).length - failed;
+      const pend = (r || []).filter(x => x.status === 'PENDING');
+      const dis = (c && c.disconnected) || [];
+      const openM = (m || []).filter(x => x.status === 'OPEN').length;
+      const lowSources = (s || []).filter(x => x.totalCapacity && (x.remainingWater / x.totalCapacity < 0.2));
+
+      // Construct alerts
+      const al = [];
+      if (dis.length) {
+        al.push(['bad', `Critical Disconnection: ${dis.length} distribution area(s) cannot reach any water source (${dis.join(', ')})`]);
+      }
+      if (failed) {
+        al.push(['bad', `Infrastructure Alert: ${failed} pipeline segment(s) are in FAILED state.`]);
+      }
+      lowSources.forEach(x => {
+        al.push(['warn', `Low Reservoir Warning: ${x.sourceName} is below 20% capacity (${x.remainingWater.toLocaleString()} L remaining)`]);
+      });
+      if (openM) {
+        al.push(['warn', `Pending Maintenance: ${openM} open repair ticket(s) awaiting resolution.`]);
+      }
+      if (pend.length) {
+        al.push(['warn', `Pending Queue: ${pend.length} unserved water request(s) awaiting allocation dispatch.`]);
+      }
+
+      const alertsHtml = al.length
+        ? `<div class="alerts-container">${al.map(x => `<div class="alert ${x[0] === 'bad' ? 'bad' : ''}"><span aria-hidden="true">${x[0] === 'bad' ? '⚠' : 'ℹ'}</span><span>${esc(x[1])}</span></div>`).join('')}</div>`
+        : `<div class="alerts-container"><div class="alert ok"><span aria-hidden="true">✓</span><span>All systems normal. Reservoir capacities and pipelines are operating within standard parameters.</span></div></div>`;
+
+      const pct = (num, den) => den ? Math.round(100 * num / den) : 0;
+
+      // Source Level Progress Bars
+      const bars = s.map(x => {
+        const pc = pct(x.remainingWater, x.totalCapacity);
+        const cl = pc < 20 ? 'low' : pc < 50 ? 'warn' : 'ok';
+        return `
+          <div class="gb">
+            <span class="n">${esc(x.sourceName)}<small>${x.remainingWater.toLocaleString()} / ${x.totalCapacity.toLocaleString()} L</small></span>
+            <div class="bar" role="progressbar" aria-valuenow="${pc}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(x.sourceName)} capacity">
+              <i class="${cl}" style="width: ${pc}%"></i>
+            </div>
+            <em>${pc}%</em>
+          </div>
+        `;
+      }).join('') || '<p class="muted">No water sources registered.</p>';
+
+      // Request Queue Sorting
+      const name = {};
+      (a || []).forEach(x => name[x.areaId] = x.areaName);
+      const rank = { CRITICAL: 0, HIGH: 1, NORMAL: 2 };
+      const sorted = [...pend].sort((x, y) => (rank[x.priority] ?? 2) - (rank[y.priority] ?? 2));
+      const queue = sorted.slice(0, 5).map(x => `
+        <div class="q">
+          <span class="req-info" title="${esc(x.requestId)}">
+            <strong>${esc(x.requestId)}</strong> · ${esc(name[x.areaId] || x.areaId)} (${x.requiredWater.toLocaleString()} L)
+          </span>
+          ${badge(x.priority)}
+        </div>
+      `).join('') + (sorted.length > 5 ? `<p class="muted subtle" style="margin-top:0.5rem">+${sorted.length - 5} additional requests in queue</p>` : '')
+        || '<p class="muted">Queue is clear. No pending requests.</p>';
+
+      const info = `
+        <div class="info">
+          <span>Pending: <b>${pend.length}</b></span>
+          <span>Critical: <b>${pend.filter(x => x.priority === 'CRITICAL').length}</b></span>
+          <span>Failed Pipes: <b>${failed}</b></span>
+          <span>Open Repairs: <b>${openM}</b></span>
+        </div>
+      `;
+
+      // Bubble Chart
+      const pc2 = { CRITICAL: ['#dc2626', '#ef4444'], HIGH: ['#d97706', '#f59e0b'], NORMAL: ['#0284c7', '#38bdf8'] };
+      const mxr = Math.max(1, ...pend.map(x => x.requiredWater));
+      const bub = pend.length ? `
+        <svg class="ch" viewBox="0 0 300 130" role="img" aria-label="Requests by priority and volume">
+          <defs>
+            ${Object.entries(pc2).map(([k, v]) => `
+              <radialGradient id="rg${k}" cx=".35" cy=".3" r=".8">
+                <stop offset="0%" stop-color="${v[1]}"/>
+                <stop offset="100%" stop-color="${v[0]}"/>
+              </radialGradient>
+            `).join('')}
+          </defs>
+          ${['Critical', 'High', 'Normal'].map((l, i) => `
+            <line x1="50" x2="295" y1="${22 + i * 44}" y2="${22 + i * 44}" stroke="var(--border-subtle)"/>
+            <text x="0" y="${26 + i * 44}" fill="var(--text-muted)">${l}</text>
+          `).join('')}
+          ${pend.map((x, i) => `
+            <circle cx="${58 + (i + 0.5) * 230 / pend.length}" cy="${22 + (rank[x.priority] ?? 2) * 44}" r="${Math.min(18, 6 + 12 * Math.sqrt(x.requiredWater / mxr))}" fill="url(#rg${x.priority})" opacity="0.9">
+              <title>${esc(x.requestId)}: ${x.requiredWater.toLocaleString()} L (${esc(x.priority)})</title>
+            </circle>
+          `).join('')}
+        </svg>
+      ` : '';
+
+      // Demand vs Delivery Chart
+      const W2 = 420, H2 = 200, L = 50, B = 28, TopM = 12;
+      const mxd = Math.max(1, ...(a || []).map(x => Math.max(x.dailyDemand || 0, x.lastDeliveredAmount || 0)));
+      const X = i => a.length > 1 ? L + (W2 - L - 16) * i / (a.length - 1) : (W2 + L) / 2;
+      const Y = v => TopM + (H2 - TopM - B) * (1 - (v || 0) / mxd);
+      const sm = pts => pts.map((z, i) => i ? `C${(pts[i - 1][0] + z[0]) / 2} ${pts[i - 1][1]}, ${(pts[i - 1][0] + z[0]) / 2} ${z[1]}, ${z[0]} ${z[1]}` : `M${z[0]} ${z[1]}`).join('');
+      const line = (key, col) => {
+        const pts = a.map((x, i) => [X(i), Y(x[key])]);
+        return `<path d="${sm(pts)}" fill="none" stroke="${col}" stroke-width="2.5" stroke-linecap="round"/>`
+          + pts.map(z => `<circle cx="${z[0]}" cy="${z[1]}" r="3.5" fill="#fff" stroke="${col}" stroke-width="2"/>`).join('');
+      };
+      const grid = [0, 0.5, 1].map(f => `
+        <line x1="${L}" x2="${W2 - 8}" y1="${Y(mxd * f)}" y2="${Y(mxd * f)}" stroke="var(--border-subtle)"/>
+        <text x="${L - 6}" y="${Y(mxd * f) + 3}" text-anchor="end" fill="var(--text-muted)">${Math.round(mxd * f).toLocaleString()}</text>
+      `).join('');
+      const xl = (a || []).map((x, i) => `<text x="${X(i)}" y="${H2 - 8}" text-anchor="middle" fill="var(--text-muted)">${esc(x.areaName.length > 8 ? x.areaName.slice(0, 7) + '…' : x.areaName)}</text>`).join('');
+      const dem = (a && a.length) ? `
+        <svg class="ch" viewBox="0 0 ${W2} ${H2}" role="img" aria-label="Daily demand vs delivered volume">
+          ${grid}${xl}${line('dailyDemand', '#7c3aed')}${line('lastDeliveredAmount', '#0284c7')}
+        </svg>
+        <div class="lg" style="justify-content:center">
+          <span><span class="dot" style="background:#7c3aed"></span>Daily Demand (L)</span>
+          <span><span class="dot" style="background:#0284c7"></span>Last Delivered (L)</span>
+        </div>
+      ` : '<p class="muted">No distribution areas registered.</p>';
+
+      // Donut Chart
+      const statusCols = { ALLOCATED: '#16a34a', PARTIALLY_ALLOCATED: '#d97706', PENDING: '#0284c7', REJECTED: '#dc2626' };
+      const cnt = {};
+      (r || []).forEach(x => cnt[x.status] = (cnt[x.status] || 0) + 1);
+      let acc = 0;
+      const stops = Object.keys(cnt).map(k => {
+        const from = acc;
+        const to = acc += 100 * cnt[k] / r.length;
+        return `${statusCols[k] || '#94a3b8'} ${from}% ${to}%`;
+      }).join(', ');
+      const donut = (r && r.length) ? `
+        <div class="ring" style="background:conic-gradient(${stops})" aria-label="Status distribution of ${r.length} requests">
+          <i>${r.length}</i>
+        </div>
+        <div class="lgd">
+          ${Object.keys(cnt).map(k => `
+            <span><span class="dot" style="background:${statusCols[k] || '#94a3b8'}"></span>${esc(k.replace(/_/g, ' ').toLowerCase())}: ${cnt[k]}</span>
+          `).join('')}
+        </div>
+      ` : '<p class="muted">No requests recorded.</p>';
+
+      // Network Health Arcs
+      const rings = [
+        ['Pipelines Working', pct(working, (p || []).length), '#0284c7', '#0ea5e9'],
+        ['Reservoir Water Remaining', pct(rem, cap), '#059669', '#10b981'],
+        ['Requests Served', pct((r || []).filter(x => x.status === 'ALLOCATED' || x.status === 'PARTIALLY_ALLOCATED').length, (r || []).length), '#d97706', '#f59e0b'],
+        ['Connected Areas', pct(Math.max(0, (a || []).length - dis.length), (a || []).length), '#2563eb', '#3b82f6']
+      ];
+      const arcs = rings.map((g, i) => {
+        const rr = 82 - i * 15;
+        const C = 2 * Math.PI * rr;
+        return `<circle cx="100" cy="100" r="${rr}" fill="none" stroke="var(--bg-muted)" stroke-width="9"/>`
+          + (g[1] > 0 ? `<circle cx="100" cy="100" r="${rr}" fill="none" stroke="url(#arc${i})" stroke-width="9" stroke-linecap="round" stroke-dasharray="${C * g[1] / 100} ${C}" transform="rotate(-90 100 100)"/>` : '');
+      }).join('');
+      const defs = rings.map((g, i) => `
+        <linearGradient id="arc${i}" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="${g[2]}"/>
+          <stop offset="100%" stop-color="${g[3]}"/>
+        </linearGradient>
+      `).join('');
+      const flow = `
+        <div class="flow">
+          <svg viewBox="0 0 200 200" role="img" aria-label="Network Health Telemetry">
+            <defs>${defs}</defs>
+            ${arcs}
+          </svg>
+          <ul>
+            ${rings.map(g => `<li><span class="dot" style="background:${g[2]}"></span>${g[0]} <b>${g[1]}%</b></li>`).join('')}
+          </ul>
+        </div>
+        <p class="muted subtle" style="margin-top:0.6rem;text-align:center">${working} pipeline(s) operational · ${failed} failed</p>
+      `;
+
+      const alist = (a || []).map(x => `
+        <div class="${dis.includes(x.areaId) ? 'bad' : ''}">
+          <strong>${esc(x.areaName)}</strong>
+          <small>${(x.dailyDemand || 0).toLocaleString()} L/day · ${esc(x.type)}</small>
+        </div>
+      `).join('') || '<p class="muted">No areas registered.</p>';
+
+      const act = (h || []).slice(-5).reverse().map(x => `<li>${esc(x)}</li>`).join('') || '<li class="muted">No allocation history recorded.</li>';
+
+      return `
+        <!-- High Level Stat Cards -->
+        <div class="cards">
+          <div class="stat"><span>Water Remaining</span><b>${rem.toLocaleString()} L</b></div>
+          <div class="stat"><span>Distribution Areas</span><b>${(a || []).length}</b></div>
+          <div class="stat"><span>Population Served</span><b>${sum(a, 'population').toLocaleString()}</b></div>
+          <div class="stat${pend.length ? ' warn' : ''}"><span>Pending Requests</span><b>${pend.length}</b></div>
+          <div class="stat${failed ? ' bad' : ''}"><span>Failed Pipelines</span><b>${failed}</b></div>
+          <div class="stat${openM ? ' warn' : ''}"><span>Open Tickets</span><b>${openM}</b></div>
+        </div>
+
+        ${alertsHtml}
+
+        <!-- Run Distribution Banner -->
+        <div class="action-banner">
+          <div class="action-banner-text">
+            <h2>Execute Water Allocation Dispatch</h2>
+            <p>${pend.length} request(s) queued. Priority distribution will serve Critical, then High, then Normal needs.</p>
+          </div>
+          <button class="b big" id="go" type="button">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            Distribute Water Now
+          </button>
+        </div>
+
+        <!-- Telemetry Row 1 -->
+        <div class="row r1">
+          <div class="panel">
+            <h2>Network Connectivity</h2>
+            <div class="mc">
+              <div class="al" role="region" aria-label="Distribution Area Statuses">${alist}</div>
+              <div>
+                <div class="net-card">${drawNet(s, a, p, new Set(dis), 420, 290)}</div>
+                <div class="lg">
+                  <span><span class="dot" style="background:#0284c7"></span>Area</span>
+                  <span><span class="dot" style="background:#dc2626"></span>Disconnected</span>
+                  <span><span class="dot square" style="background:#0b1f2c"></span>Source</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Reservoir Levels</h2>
+            ${bars}
+          </div>
+          <div class="panel">
+            <h2>Request Queue</h2>
+            ${info}
+            ${bub}
+            ${queue}
+          </div>
+        </div>
+
+        <!-- Telemetry Row 2 -->
+        <div class="row r2">
+          <div class="panel">
+            <h2>Demand vs Delivery</h2>
+            ${dem}
+          </div>
+          <div class="panel">
+            <h2>Requests by Status</h2>
+            ${donut}
+          </div>
+          <div class="panel">
+            <h2>System Health Telemetry</h2>
+            ${flow}
+          </div>
+        </div>
+
+        <!-- Recent Activity Log -->
+        <div class="panel">
+          <h2>Recent Activity & Audit Log</h2>
+          <ul class="log">${act}</ul>
+        </div>
+      `;
+    }
+
+    /**
+     * Water Distribution View (Interval setting and execution)
+     */
+    async function distribute() {
+      const hist = (await run(() => api('/history'))) || [];
+      return `
+        <div class="panel">
+          <h2>Normal Supply Schedule</h2>
+          <p class="muted">Configure the target operational frequency between regular distribution cycles.</p>
+          ${formHtml('iv', [['interval', 'Days between supplies', 'number']], 'Save Schedule Interval')}
+        </div>
+        <div class="panel">
+          <h2>Run Allocation Engine</h2>
+          <p class="muted">Serves pending area requests in strict priority order: CRITICAL institutional needs first, followed by HIGH priority, then NORMAL residential demands.</p>
+          <button class="b big" id="go" type="button">Execute Automated Distribution</button>
+        </div>
+        <div class="panel">
+          <h2>Allocation History</h2>
+          ${hist.length ? '<ul class="log">' + hist.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : '<p class="muted">No allocation cycles recorded yet.</p>'}
+        </div>
+      `;
+    }
+
+    /**
+     * Render the scalable, responsive SVG network map with clear pipeline statuses & legible labels
+     */
+    function drawNet(s, a, p, dis, W, H) {
+      const sources = s || [];
+      const areas = a || [];
+      const pipes = p || [];
+      const disconnectedSet = dis || new Set();
+
+      const nodes = [
+        ...sources.map(x => ({ id: x.sourceId, name: x.sourceName, src: true, remaining: x.remainingWater })),
+        ...areas.map(x => ({ id: x.areaId, name: x.areaName, src: false, demand: x.dailyDemand }))
+      ];
+
+      if (!nodes.length) {
+        return `<svg class="map" viewBox="0 0 ${W} ${H}" role="img"><text x="${W/2}" y="${H/2}" text-anchor="middle" fill="var(--text-muted)">No network nodes found.</text></svg>`;
+      }
+
+      const padding = 55;
+      const Rx = (W / 2) - padding;
+      const Ry = (H / 2) - padding;
+      const cx = W / 2;
+      const cy = H / 2;
+      const pos = {};
+
+      nodes.forEach((n, i) => {
+        const theta = (2 * Math.PI * i / nodes.length) - (Math.PI / 2);
+        pos[n.id] = [cx + Rx * Math.cos(theta), cy + Ry * Math.sin(theta)];
+      });
+
+      // Pipeline lines with distinct styling for working vs failed
+      const lines = pipes.filter(x => pos[x.fromId] && pos[x.toId]).map(x => {
+        const [x1, y1] = pos[x.fromId];
+        const [x2, y2] = pos[x.toId];
+        const isFailed = x.status === 'FAILED';
+        return `
+          <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
+            class="${isFailed ? 'pipe-failed' : 'pipe-working'}">
+            <title>Pipeline ${esc(x.pipelineId)}: ${esc(x.fromId)} → ${esc(x.toId)} (${esc(x.status)})</title>
+          </line>
+        `;
+      }).join('');
+
+      // Render nodes with background label pills for maximum contrast and legibility
+      const markers = nodes.map(n => {
+        const [x, y] = pos[n.id];
+        const isBad = disconnectedSet.has(n.id);
+        const labelText = esc(n.name.length > 14 ? n.name.slice(0, 13) + '…' : n.name);
+
+        let shape = '';
+        if (n.src) {
+          // Reservoir square
+          shape = `
+            <rect x="${x - 14}" y="${y - 14}" width="28" height="28" rx="6" fill="#0b1f2c" stroke="#0284c7" stroke-width="2.5"/>
+            <path d="M${x-5} ${y-3}c0-3 5-7 5-7s5 4 5 7a5 5 0 0 1-10 0z" fill="#38bdf8"/>
+          `;
+        } else {
+          // Area circle
+          shape = `
+            <circle cx="${x}" cy="${y}" r="14" fill="${isBad ? '#fee2e2' : '#ffffff'}" stroke="${isBad ? '#dc2626' : '#0284c7'}" stroke-width="${isBad ? 3.5 : 2.5}"/>
+            ${isBad ? `<text x="${x}" y="${y + 4}" font-size="12" font-weight="bold" fill="#dc2626" text-anchor="middle">!</text>` : ''}
+          `;
+        }
+
+        const pillWidth = Math.max(50, labelText.length * 7.5 + 14);
+        const labelY = (y > cy) ? y + 26 : y - 22;
+
+        return `
+          <g class="map-node" data-id="${esc(n.id)}">
+            <title>${esc(n.name)} (${esc(n.id)})${n.src ? ' · Reservoir Source' : isBad ? ' · DISCONNECTED' : ' · Area Connected'}</title>
+            ${shape}
+            <rect x="${x - pillWidth / 2}" y="${labelY - 11}" width="${pillWidth}" height="17" rx="4" fill="rgba(255, 255, 255, 0.92)" stroke="var(--border-strong)" stroke-width="1"/>
+            <text x="${x}" y="${labelY + 2}" font-size="11" font-weight="600" fill="var(--text-main)" text-anchor="middle">${labelText}</text>
+          </g>
+        `;
+      }).join('');
+
+      return `
+        <svg class="map" viewBox="0 0 ${W} ${H}" role="img" aria-label="Water Network Topology Map" preserveAspectRatio="xMidYMid meet">
+          ${lines}
+          ${markers}
+        </svg>
+      `;
+    }
+
+    /**
+     * Dedicated Full-page Network Map View with detailed legend
+     */
+    async function networkMap() {
+      const [s, a, p, c] = await Promise.all([
+        '/sources', '/areas', '/pipelines', '/connectivity'
+      ].map(x => run(() => api(x))));
+
+      if (!s) {
+        return '<p class="muted">Cannot load network data. Start the backend and reload.</p>';
+      }
+
+      const disconnectedSet = new Set((c && c.disconnected) || []);
+
+      return `
+        <div class="panel">
+          <h2>Network Topology & Connectivity Overview</h2>
+          <p class="muted">Interactive schematic map showing current connectivity between regional sources and municipal distribution areas.</p>
+          <div class="net-card big">
+            ${drawNet(s, a, p, disconnectedSet, 840, 500)}
+          </div>
+          <div class="panel" style="margin-top:1.25rem;background:var(--bg-subtle)">
+            <h3 style="font-size:0.95rem;margin-bottom:0.75rem">Map Legend & Indicators</h3>
+            <div class="lg" style="font-size:0.85rem;gap:1.5rem">
+              <span><span class="dot square" style="background:#0b1f2c;border:2px solid #0284c7"></span> Water Reservoir Source</span>
+              <span><span class="dot" style="background:#ffffff;border:2.5px solid #0284c7"></span> Connected Distribution Area</span>
+              <span><span class="dot" style="background:#fee2e2;border:3px solid #dc2626"></span> Disconnected Area (No Source Path)</span>
+              <span><span style="display:inline-block;width:24px;height:3px;background:var(--color-water);border-radius:2px"></span> Operational Pipeline</span>
+              <span><span style="display:inline-block;width:24px;height:3px;border-top:3px dashed var(--status-bad-line)"></span> Failed Pipeline</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Initialize to default overview tab
+    show('overview');
+  </script>
+</body>
+</html>
