@@ -69,7 +69,7 @@
             <span>Area Identifier</span>
             <input type="text" id="areaId" name="areaId" placeholder="Enter your Area ID (e.g. A1)" autocomplete="off" required>
           </label>
-          <button class="btn" type="submit" id="muni-submit-btn">Verify & Sign In</button>
+          <button class="btn" type="submit" id="muni-submit-btn">Verify & Continue</button>
         </form>
       </section>
     </main>
@@ -81,15 +81,12 @@
   <script>
     $('#mf').onsubmit = async e => {
       e.preventDefault();
-      const submitBtn = $('#muni-submit-btn');
       const id = $('#areaId').value.trim();
       if (!id) return toast('Please enter your Area ID.', true);
-      
-      // Validates single area ID with backend GET /areas/{id}
-      const a = await run(() => api('/areas/' + encodeURIComponent(id)), null, submitBtn);
-      if (!a) return; // run() displays server error toast
-      
-      sessionStorage.setItem('areaId', a.areaId);
+      // Check that the area exists, then open its portal
+      const area = await run(() => api('/areas/' + encodeURIComponent(id)), null, $('#muni-submit-btn'));
+      if (!area) return;
+      sessionStorage.setItem('areaId', area.areaId);
       location.href = 'municipal.html';
     };
   </script>

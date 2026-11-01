@@ -19,6 +19,8 @@ public class WaterRequest {
     private int allocatedWater = 0;
     private int unmetWater;
     private Status status = Status.PENDING;
+    private final int createdDay;
+    private int allocatedDay = -1;
 
     public WaterRequest(String requestId, DistributionArea area, int requiredWater,
                         boolean emergency, int sequenceNumber, int currentDay) {
@@ -31,6 +33,7 @@ public class WaterRequest {
         this.areaType = area.getType();
         this.sequenceNumber = sequenceNumber;
         this.unmetWater = requiredWater;
+        this.createdDay = currentDay;
     }
 
     public String getRequestId() { return requestId; }
@@ -45,17 +48,21 @@ public class WaterRequest {
     public int getAllocatedWater() { return allocatedWater; }
     public int getUnmetWater() { return unmetWater; }
     public Status getStatus() { return status; }
+    public int getCreatedDay() { return createdDay; }
+    public int getAllocatedDay() { return allocatedDay; }
 
     public void setPriority(Priority p) { this.priority = p; }
 
-    public void allocate(int amount) {
+    public void allocate(int amount, int day) {
         allocatedWater = amount;
+        allocatedDay = day;
         unmetWater = requiredWater - amount;
         status = (unmetWater == 0) ? Status.ALLOCATED : Status.PARTIALLY_ALLOCATED;
     }
 
-    public void restore(int days, Priority p, int allocated, int unmet, Status s) {
+    public void restore(int days, Priority p, int allocated, int unmet, Status s, int allocDay) {
         daysSinceLastSupply = days; priority = p; allocatedWater = allocated; unmetWater = unmet; status = s;
+        allocatedDay = allocDay;
     }
 
     public void markRejected() { status = Status.REJECTED; }
@@ -63,7 +70,7 @@ public class WaterRequest {
     public void displayRequest() {
         System.out.println("Request " + requestId + " | Area: " + areaId + " (" + areaType + ")"
                 + " | Required: " + requiredWater + " L | Emergency: " + (emergency ? "YES" : "NO")
-                + " | Priority: " + priority + " | Seq: " + sequenceNumber
+                + " | Priority: " + priority + " | Seq: " + sequenceNumber + " | Day: " + createdDay
                 + " | Days since supply: " + daysSinceLastSupply + " | Population: " + population
                 + " | Allocated: " + allocatedWater + " L | Unmet: " + unmetWater + " L | " + status);
     }

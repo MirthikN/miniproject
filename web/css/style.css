@@ -845,6 +845,12 @@ th, td {
   white-space: nowrap;
 }
 
+/* Wide tables (maintenance, reports) may wrap their text instead of scrolling sideways */
+.wrap.wrap-text th,
+.wrap.wrap-text td {
+  white-space: normal;
+}
+
 th {
   font-size: 0.75rem;
   font-weight: 600;
@@ -892,6 +898,7 @@ tbody tr:hover {
 .badge.PENDING,
 .badge.HIGH,
 .badge.OPEN,
+.badge.IN_PROGRESS,
 .badge.PARTIALLY_ALLOCATED {
   background: var(--status-warn-bg);
   color: var(--status-warn-text);

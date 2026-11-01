@@ -64,6 +64,7 @@
       map: { group: 'Monitor', title: 'Network map', desc: 'Geospatial network topology, pipeline status, and connectivity' },
       requests: { group: 'Monitor', title: 'Water requests', desc: 'Incoming municipal demand queue and priority classification', path: '/requests',
         cols: [['Request ID', 'requestId'], ['Area', 'areaId'], ['Required (L)', 'requiredWater'], ['Emergency', 'emergency'], ['Priority', 'priority'], ['Allocated (L)', 'allocatedWater'], ['Unmet (L)', 'unmetWater'], ['Status', 'status']] },
+      reports: { group: 'Monitor', title: 'Day-wise report', desc: 'Every water request, allocation and maintenance request, day by day with its date' },
       sources: { group: 'Setup', title: 'Water sources', desc: 'Regional supply reservoirs, maximum capacity, and telemetry', path: '/sources',
         cols: [['Source ID', 'sourceId'], ['Source Name', 'sourceName'], ['Capacity (L)', 'totalCapacity'], ['Remaining (L)', 'remainingWater']],
         form: ['Add Water Source', [['sourceId', 'Source ID'], ['sourceName', 'Source Name'], ['totalCapacity', 'Total Capacity (L)', 'number']], 'Add Source'] },
@@ -78,8 +79,14 @@
           + `<button class="sm" data-a="remove" data-id="${esc(p.pipelineId)}" aria-label="Remove pipeline ${esc(p.pipelineId)}">Remove</button>`,
         form: ['Add Pipeline Segment', [['pipelineId', 'Pipeline ID'], ['fromId', 'From (Location ID)'], ['toId', 'To (Location ID)']], 'Add Pipeline'] },
       distribute: { group: 'Operate', title: 'Distribute water', desc: 'Execute automated priority allocation algorithm and interval configuration' },
-      maintenance: { group: 'Operate', title: 'Maintenance requests', desc: 'Reported pipeline incidents and field repair tracking', path: '/maintenance',
-        cols: [['ID', 'maintenanceId'], ['Pipeline', 'pipelineId'], ['Issue Description', 'issue'], ['Status', 'status']] }
+      maintenance: { group: 'Operate', title: 'Maintenance requests', path: '/maintenance', wrap: true,
+        desc: 'Most urgent first. Urgency score = people left without water + institution bonus + 200 per day open',
+        cols: [['Ticket', 'maintenanceId'], ['Pipeline', 'pipelineId'], ['Issue', 'issue'], ['Reported By', 'reportedBy'],
+               ['Status', 'status'], ['Opened', 'openedOn'], ['Closed', 'closedOn'],
+               ['People Affected', 'peopleAffected'], ['Days Open', 'daysOpen'], ['Urgency Score', 'score']],
+        act: m => m.status === 'COMPLETED' ? '' :
+          (m.status === 'OPEN' ? `<button class="sm" data-a="mstart" data-id="${esc(m.maintenanceId)}" aria-label="Start work on ticket ${esc(m.maintenanceId)}">Start work</button>` : '')
+          + `<button class="sm" data-a="repair" data-id="${esc(m.pipelineId)}" aria-label="Complete repair of pipeline ${esc(m.pipelineId)}">Complete repair</button>` }
     };
 
     let cur = 'overview';
@@ -128,7 +135,7 @@
           <h1>${esc(t.title)}</h1>
           <p>${esc(t.desc)}</p>
         </div>
-        ${k === 'overview' ? skeletonCards(6) + skeletonTable(4) : skeletonTable(4)}
+        ${k === 'overview' ? skeletonCards(5) + skeletonTable(4) : skeletonTable(4)}
       `;
 
       let contentHtml = '';
@@ -138,13 +145,15 @@
         contentHtml = await distribute();
       } else if (k === 'map') {
         contentHtml = await networkMap();
+      } else if (k === 'reports') {
+        contentHtml = await reports();
       } else {
         let formPanel = '';
         if (t.form) {
           formPanel = `<div class="panel"><h2>${esc(t.form[0])}</h2>${formHtml('add', t.form[1], t.form[2])}</div>`;
         }
         const rows = await run(() => api(t.path));
-        contentHtml = `${formPanel}<div class="panel"><h2>${esc(t.title)} Data</h2>${table(t.cols, rows, t.act)}</div>`;
+        contentHtml = `${formPanel}<div class="panel"><h2>${esc(t.title)} Data</h2>${table(t.cols, rows, t.act, { wrap: t.wrap })}</div>`;
       }
 
       $('#main').innerHTML = `
@@ -170,6 +179,40 @@
           e.preventDefault();
           const btn = e.target.querySelector('button[type="submit"]');
           await run(() => api('/interval', 'POST', formData(e.target)), 'Supply interval updated successfully', btn);
+        };
+      }
+
+      // Forms on the Distribute tab: start date, current date, minimum guarantee
+      const settings = (sel, path, okMsg, toBody) => {
+        if (!$(sel)) return;
+        $(sel).onsubmit = async e => {
+          e.preventDefault();
+          const btn = e.target.querySelector('button[type="submit"]');
+          const r = await run(() => api(path, 'POST', toBody(formData(e.target))), okMsg, btn);
+          if (r) show(cur);
+        };
+      };
+      settings('#sd', '/startdate', 'Start date saved', d => ({ startDate: d.startDate }));
+      settings('#cd', '/day', 'Current date updated', d => ({ date: d.date }));
+      settings('#lm', '/lmin', 'Minimum guarantee saved', d => ({ lMin: d.lMin }));
+      if (k === 'distribute') {
+        if ($('#iv_interval') && distCfg.interval > 0) $('#iv_interval').value = distCfg.interval;
+        if ($('#lm_lMin')) $('#lm_lMin').value = distCfg.lMin;
+        if ($('#sd_startDate') && distCfg.startDate) $('#sd_startDate').value = distCfg.startDate;
+        if ($('#cd_date')) {
+          $('#cd_date').min = distCfg.startDate || '';
+          if (distCfg.currentDate) $('#cd_date').value = distCfg.currentDate;
+        }
+      }
+
+      if ($('#rf')) {
+        $('#rf').onsubmit = async e => {
+          e.preventDefault();
+          const f = e.target;
+          const qs = new URLSearchParams();
+          ['areaId', 'from', 'to'].forEach(n => { if (f[n].value) qs.set(n, f[n].value); });
+          const r = await run(() => api('/report?' + qs.toString()), null, f.querySelector('button'));
+          if (r) $('#rout').innerHTML = reportHtml(r, true);
         };
       }
 
@@ -212,6 +255,9 @@
           await run(() => api(`/pipelines/${encodeURIComponent(id)}/repair`, 'POST', { details }), 'Pipeline repaired and operational', btn);
           show(cur);
         }
+      } else if (a === 'mstart') {
+        await run(() => api(`/maintenance/${encodeURIComponent(id)}/start`, 'POST'), 'Work started on the ticket', btn);
+        show(cur);
       } else if (a === 'remove') {
         const ok = await modalConfirm({
           title: 'Delete Pipeline Segment',
@@ -247,7 +293,7 @@
       const working = (p || []).length - failed;
       const pend = (r || []).filter(x => x.status === 'PENDING');
       const dis = (c && c.disconnected) || [];
-      const openM = (m || []).filter(x => x.status === 'OPEN').length;
+      const openM = (m || []).filter(x => x.status !== 'COMPLETED').length;
       const lowSources = (s || []).filter(x => x.totalCapacity && (x.remainingWater / x.totalCapacity < 0.2));
 
       // Construct alerts
@@ -434,7 +480,6 @@
           <div class="stat"><span>Population Served</span><b>${sum(a, 'population').toLocaleString()}</b></div>
           <div class="stat${pend.length ? ' warn' : ''}"><span>Pending Requests</span><b>${pend.length}</b></div>
           <div class="stat${failed ? ' bad' : ''}"><span>Failed Pipelines</span><b>${failed}</b></div>
-          <div class="stat${openM ? ' warn' : ''}"><span>Open Tickets</span><b>${openM}</b></div>
         </div>
 
         ${alertsHtml}
@@ -508,23 +553,68 @@
     /**
      * Water Distribution View (Interval setting and execution)
      */
+    let distCfg = {};
+
     async function distribute() {
-      const hist = (await run(() => api('/history'))) || [];
+      const [hist, cfg] = await Promise.all(['/history', '/config'].map(x => run(() => api(x))));
+      distCfg = cfg || {};
+      const log = hist || [];
+      const dateNote = distCfg.currentDate
+        ? `Current date: <strong>${esc(distCfg.currentDate)}</strong> (Day ${esc(distCfg.currentDay)}).`
+        : 'The current date has not been set yet.';
       return `
+        <div class="panel">
+          <h2>Calendar</h2>
+          <p class="muted">${distCfg.startDate ? `Day 0 is <strong>${esc(distCfg.startDate)}</strong>.` : 'Choose the date that counts as Day 0.'} ${dateNote}
+            Municipal users enter calendar dates and the day number is worked out from the start date.</p>
+          ${distCfg.currentDay >= 0
+            ? '<p class="muted">The start date is locked because the current date has already been set.</p>'
+            : formHtml('sd', [['startDate', 'Start date (Day 0)', 'date']], 'Save Start Date')}
+          ${distCfg.startDate ? formHtml('cd', [['date', 'Current date', 'date']], 'Set Current Date') : ''}
+        </div>
         <div class="panel">
           <h2>Normal Supply Schedule</h2>
           <p class="muted">Configure the target operational frequency between regular distribution cycles.</p>
           ${formHtml('iv', [['interval', 'Days between supplies', 'number']], 'Save Schedule Interval')}
         </div>
         <div class="panel">
+          <h2>Shortage Rule: Minimum Guarantee</h2>
+          <p class="muted">When a priority tier cannot be served in full, every request first gets <strong>min(need, population &times; L)</strong>.
+            The water that is left is then shared in proportion to what each request still needs.
+            Set <strong>L</strong>, the basic litres per person, below.</p>
+          ${formHtml('lm', [['lMin', 'Minimum litres per person (L)', 'number']], 'Save Minimum')}
+        </div>
+        <div class="panel">
           <h2>Run Allocation Engine</h2>
-          <p class="muted">Serves pending area requests in strict priority order: CRITICAL institutional needs first, followed by HIGH priority, then NORMAL residential demands.</p>
+          <p class="muted">Serves pending area requests tier by tier: CRITICAL institutional needs first, then HIGH, then NORMAL. Water is drawn from every source the area can reach.</p>
           <button class="b big" id="go" type="button">Execute Automated Distribution</button>
         </div>
         <div class="panel">
           <h2>Allocation History</h2>
-          ${hist.length ? '<ul class="log">' + hist.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : '<p class="muted">No allocation cycles recorded yet.</p>'}
+          ${log.length ? '<ul class="log">' + log.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : '<p class="muted">No allocation cycles recorded yet.</p>'}
         </div>
+      `;
+    }
+
+    /**
+     * Day-wise report for all areas (or one area), with optional date range
+     */
+    async function reports() {
+      const [areas, rep] = await Promise.all(['/areas', '/report'].map(x => run(() => api(x))));
+      const opts = [['', 'All areas'], ...(areas || []).map(a => [a.areaId, `${a.areaName} (${a.areaId})`])]
+        .map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
+      return `
+        <div class="panel">
+          <h2>Filter</h2>
+          <p class="muted">Leave the dates empty to see every day. Dates need the start date to be set (Distribute water tab).</p>
+          <form class="f" id="rf">
+            <label for="rf_areaId"><span>Area</span><select id="rf_areaId" name="areaId">${opts}</select></label>
+            <label for="rf_from"><span>From date</span><input type="date" id="rf_from" name="from"></label>
+            <label for="rf_to"><span>To date</span><input type="date" id="rf_to" name="to"></label>
+            <button class="b" type="submit">Show Report</button>
+          </form>
+        </div>
+        <div id="rout">${reportHtml(rep, true)}</div>
       `;
     }
 

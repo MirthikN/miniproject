@@ -108,8 +108,9 @@ function badge(v) {
  * @param {Array<[string, string]>} cols - Column definitions [headerText, propertyKey]
  * @param {Array<object>} rows - Array of record objects
  * @param {Function|null} act - Optional action button renderer per row
+ * @param {{wrap?: boolean}} opts - wrap: let cell text wrap instead of scrolling sideways
  */
-function table(cols, rows, act) {
+function table(cols, rows, act, opts = {}) {
   if (!rows || !rows.length) {
     return `<div class="empty-state" role="status">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -135,7 +136,7 @@ function table(cols, rows, act) {
     return `<td>${cellContent}</td>`;
   }).join('') + (act ? `<td>${act(r)}</td>` : '') + '</tr>').join('');
 
-  return `<div class="wrap" tabindex="0" role="region" aria-label="Data table">
+  return `<div class="wrap${opts.wrap ? ' wrap-text' : ''}" tabindex="0" role="region" aria-label="Data table">
     <table>
       <thead><tr>${h}</tr></thead>
       <tbody>${b}</tbody>
@@ -159,7 +160,11 @@ function formHtml(id, fields, btn) {
       </label>`;
     }
     if (t === 'select') {
-      const opts = (o || []).map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
+      // options are either plain strings or [value, label] pairs
+      const opts = (o || []).map(x => {
+        const [v, lab] = Array.isArray(x) ? x : [x, x];
+        return `<option value="${esc(v)}">${esc(lab)}</option>`;
+      }).join('');
       return `<label for="${inputId}">
         <span>${esc(l)}</span>
         <select id="${inputId}" name="${k}">${opts}</select>
@@ -309,4 +314,37 @@ function skeletonTable(rows = 3) {
     r += `<div class="skeleton skeleton-table-row" aria-hidden="true"></div>`;
   }
   return `<div class="panel" aria-label="Loading data...">${r}</div>`;
+}
+
+/**
+ * Day-wise report: one block per day with the water requests, allocations and maintenance events of that day.
+ * @param {object} rep - Response of GET /report
+ * @param {boolean} showArea - Show an Area column (dam view)
+ */
+function reportHtml(rep, showArea) {
+  const days = (rep && rep.days) || [];
+  if (!days.length) {
+    return `<div class="panel"><p class="muted">No activity recorded for this period.</p></div>`;
+  }
+  const area = showArea ? [['Area', 'areaId']] : [];
+  const sub = (title, rows, cols) => `
+    <h3 style="margin:1rem 0 0.4rem;font-size:0.95rem">${esc(title)} (${rows.length})</h3>
+    ${rows.length ? table(cols, rows, null, { wrap: true }) : '<p class="muted">None on this day.</p>'}`;
+  return days.map(d => `
+    <section class="panel" aria-label="Report for ${esc(d.date || 'Day ' + d.day)}">
+      <h2>${d.date ? esc(d.date) + ' &middot; ' : ''}Day ${d.day}</h2>
+      ${sub('Water requests', d.requests, [['Request', 'requestId'], ...area, ['Required (L)', 'requiredWater'],
+        ['Emergency', 'emergency'], ['Priority', 'priority'], ['Allocated (L)', 'allocatedWater'],
+        ['Unmet (L)', 'unmetWater'], ['Status', 'status']])}
+      ${sub('Water allocations', d.allocations, [['Request', 'requestId'], ...area, ['What happened', 'message']])}
+      ${sub('Maintenance requests', d.maintenance, [['Ticket', 'maintenanceId'], ['Pipeline', 'pipelineId'],
+        ['Event', 'event'], ['Issue', 'issue'], ['Reported by', 'reportedBy'], ['Note', 'note']])}
+    </section>`).join('');
+}
+
+/** Whole days between two YYYY-MM-DD strings (b minus a), or null if either is not a date. */
+function daysBetween(a, b) {
+  const p = x => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(x || ''); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : null; };
+  const x = p(a), y = p(b);
+  return x === null || y === null ? null : Math.round((y - x) / 86400000);
 }

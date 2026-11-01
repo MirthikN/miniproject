@@ -15,10 +15,6 @@ public class Main {
     private static final ArrayList<WaterRequest> requestHistory = new ArrayList<>();
     private static final HashMap<String, WaterRequest> requestMap = new HashMap<>();
     private static final ArrayDeque<MaintenanceRequest> maintenance = new ArrayDeque<>();
-    // Open maintenance requests: priority 1 (institutional) before priority 2 (residential), then first come first served.
-    private static final PriorityQueue<MaintenanceRequest> maintQueue = new PriorityQueue<>(
-            Comparator.comparingInt(MaintenanceRequest::getPriority)
-                      .thenComparingInt(MaintenanceRequest::getSeqNo));
 
     private static final WaterNetwork network = new WaterNetwork();
     private static final WaterAllocationPolicy policy = new WaterAllocationPolicy();
@@ -292,14 +288,17 @@ public class Main {
         System.out.println(any ? "Area is connected." : "Area is currently disconnected.");
     }
 
-    // Priority 1 if either end of the pipeline is an institutional area, otherwise 2.
-    private static int maintPriority(String pid) {
-        Pipeline p = network.getPipeline(pid);
-        if (p == null) return 2;
-        DistributionArea a = areaMap.get(p.getFromId()), b = areaMap.get(p.getToId());
-        boolean inst = (a != null && a.getType().equals("INSTITUTIONAL"))
-                    || (b != null && b.getType().equals("INSTITUTIONAL"));
-        return inst ? 1 : 2;
+    // The ticket's urgency score uses the BFS: who loses every route to a source because of THIS pipeline?
+    private static MaintenanceRequest newTicket(String pid, String reason, String reportedBy) {
+        int people = 0;
+        boolean institution = false;
+        for (String id : network.getAreasCutBy(pid, areaIds(), sourceIds())) {
+            DistributionArea a = areaMap.get(id);
+            people += a.getPopulation();
+            if (a.getType().equals("INSTITUTIONAL")) institution = true;
+        }
+        return new MaintenanceRequest("M" + (++maintCounter), pid, "Failure: " + reason, reportedBy,
+                currentDay, people, institution);
     }
 
     private static void reportFailure(DistributionArea myArea) {
@@ -314,10 +313,7 @@ public class Main {
         if (!network.failPipeline(pid, reason)) {
             System.out.println("Rejected: pipeline not found or not WORKING."); return;
         }
-        MaintenanceRequest mr = new MaintenanceRequest("M" + (++maintCounter), pid, "Failure: " + reason);
-        mr.setPriority(maintPriority(pid));
-        maintenance.add(mr);
-        maintQueue.add(mr);
+        maintenance.add(newTicket(pid, reason, myArea.getAreaId()));
         System.out.println("Pipeline " + pid + " marked FAILED. Maintenance request created.");
         ArrayList<String> affected = network.getAffectedAreas(areaIds(), sourceIds());
         System.out.println(affected.isEmpty() ? "All areas still have a path to a source."
@@ -331,11 +327,7 @@ public class Main {
             System.out.println("Rejected: pipeline not found or not FAILED."); return;
         }
         for (MaintenanceRequest m : maintenance)
-            if (m.getPipelineId().equals(pid) && m.getStatus() == MaintenanceRequest.Status.OPEN) m.complete();
-        maintQueue.removeIf(q -> q.getPipelineId().equals(pid));
-        MaintenanceRequest done = new MaintenanceRequest("M" + (++maintCounter), pid, "Repair: " + details);
-        done.complete();
-        maintenance.add(done);
+            if (m.getPipelineId().equals(pid) && m.isActive()) m.complete(currentDay, details);
         System.out.println("Pipeline " + pid + " repaired (WORKING). Connectivity now:");
         ArrayList<String> affected = network.getAffectedAreas(areaIds(), sourceIds());
         for (DistributionArea a : areaList)
@@ -345,12 +337,16 @@ public class Main {
 
     private static void viewMaintenance() {
         if (maintenance.isEmpty()) { System.out.println("No maintenance requests."); return; }
-        System.out.println("--- OPEN (most urgent first) ---");
-        PriorityQueue<MaintenanceRequest> copy = new PriorityQueue<>(maintQueue);
-        while (!copy.isEmpty()) copy.poll().displayDetails();
+        System.out.println("--- ACTIVE (highest urgency score first) ---");
+        final int today = currentDay;
+        PriorityQueue<MaintenanceRequest> byScore = new PriorityQueue<>(
+                Comparator.comparingLong((MaintenanceRequest x) -> -x.score(today))
+                          .thenComparingInt(MaintenanceRequest::getSeqNo));
+        for (MaintenanceRequest m : maintenance) if (m.isActive()) byScore.add(m);
+        while (!byScore.isEmpty()) byScore.poll().displayDetails(today);
         System.out.println("--- COMPLETED ---");
         for (MaintenanceRequest m : maintenance)
-            if (m.getStatus() == MaintenanceRequest.Status.COMPLETED) m.displayDetails();
+            if (!m.isActive()) m.displayDetails(today);
     }
 
     private static void viewSources() {
@@ -370,14 +366,10 @@ public class Main {
 
     private static void viewHistory(DistributionArea myArea) {
         boolean found = false;
-        for (String line : policy.getAllocationHistory()) {
-            for (WaterRequest r : requestHistory) {
-                if (r.getAreaId().equals(myArea.getAreaId())
-                        && (line.startsWith(r.getRequestId() + " ") || line.startsWith(r.getRequestId() + ":"))) {
-                    System.out.println(line);
-                    found = true;
-                    break;
-                }
+        for (HistoryEntry e : policy.getAllocationHistory()) {
+            if (e.getAreaId().equals(myArea.getAreaId())) {
+                System.out.println("Day " + e.getDay() + ": " + e.getMessage());
+                found = true;
             }
         }
         if (!found) System.out.println("No allocation history for your area yet.");
@@ -385,6 +377,6 @@ public class Main {
 
     private static void viewHistory() {
         if (policy.getAllocationHistory().isEmpty()) { System.out.println("No allocation history yet."); return; }
-        for (String line : policy.getAllocationHistory()) System.out.println(line);
+        for (HistoryEntry e : policy.getAllocationHistory()) System.out.println("Day " + e.getDay() + ": " + e.getMessage());
     }
 }

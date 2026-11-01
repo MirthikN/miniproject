@@ -36,6 +36,11 @@ public class WaterNetwork {
     }
 
     public boolean isReachable(String sourceId, String areaId) {
+        return isReachable(sourceId, areaId, null);
+    }
+
+    /** BFS over working pipelines; the pipeline named in assumeWorking (if any) is treated as working. */
+    public boolean isReachable(String sourceId, String areaId, String assumeWorking) {
         if (!adjacency.containsKey(sourceId) || !adjacency.containsKey(areaId)) return false;
         ArrayDeque<String> queue = new ArrayDeque<>();
         HashSet<String> visited = new HashSet<>();
@@ -47,7 +52,7 @@ public class WaterNetwork {
             for (String next : adjacency.get(current)) {
                 if (visited.contains(next)) continue;
                 Pipeline p = pipelines.get(pairToPipeline.get(current + "-" + next));
-                if (p == null || !p.isWorking()) continue;
+                if (p == null || !(p.isWorking() || p.getPipelineId().equals(assumeWorking))) continue;
                 visited.add(next);
                 queue.add(next);
             }
@@ -79,5 +84,19 @@ public class WaterNetwork {
             if (!ok) affected.add(a);
         }
         return affected;
+    }
+
+    /** Areas that are cut off from every source now, but would be reachable if this one pipeline were working. */
+    public ArrayList<String> getAreasCutBy(String pipelineId, ArrayList<String> areaIds, ArrayList<String> sourceIds) {
+        ArrayList<String> cut = new ArrayList<>();
+        for (String a : areaIds) {
+            boolean reachableNow = false, reachableIfFixed = false;
+            for (String s : sourceIds) {
+                if (isReachable(s, a)) { reachableNow = true; break; }
+                if (isReachable(s, a, pipelineId)) reachableIfFixed = true;
+            }
+            if (!reachableNow && reachableIfFixed) cut.add(a);
+        }
+        return cut;
     }
 }

@@ -45,10 +45,9 @@
 
   <script src="js/api.js"></script>
   <script>
+    // The portal belongs to the area chosen on the first page
     const areaId = sessionStorage.getItem('areaId');
-    if (!areaId) {
-      location.href = 'index.html';
-    }
+    if (!areaId) { location.replace('index.html'); throw new Error('no area selected'); }
     $('#who').textContent = 'Area ' + areaId;
 
     async function load() {
@@ -62,14 +61,20 @@
         ${skeletonTable(3)}
       `;
 
-      const [me, req, src, hist] = await Promise.all([
-        `/areas/${encodeURIComponent(areaId)}`,
-        `/requests?areaId=${encodeURIComponent(areaId)}`,
-        '/sources',
-        `/history?areaId=${encodeURIComponent(areaId)}`
+      const q = '?areaId=' + encodeURIComponent(areaId);
+      const [me, req, src, hist, cfg, maint, pipes, rep] = await Promise.all([
+        `/areas/${encodeURIComponent(areaId)}`, '/requests' + q, '/sources', '/history' + q,
+        '/config', '/maintenance' + q, '/pipelines' + q, '/report' + q
       ].map(x => run(() => api(x))));
 
       const areaTitle = me ? esc(me.areaName) : `Area ${esc(areaId)}`;
+      const config = cfg || {};
+      const working = (pipes || []).filter(p => p.status === 'WORKING')
+        .map(p => [p.pipelineId, `${p.pipelineId}: ${p.fromId} to ${p.toId}`]);
+
+      const dateNote = config.currentDate
+        ? `Current date: <strong>${esc(config.currentDate)}</strong> (Day ${esc(config.currentDay)})`
+        : 'The current date has not been set yet.';
 
       $('#main').innerHTML = `
         <div class="page-header">
@@ -87,9 +92,12 @@
 
         <!-- Operation Forms Row -->
         <div class="panel">
-          <h2>Calendar Supply Day</h2>
-          <p class="muted">Update current calendar day index to synchronize demand calculation.</p>
-          ${formHtml('day', [['day', 'Calendar Day Number', 'number']], 'Set Operational Day')}
+          <h2>Set Current Date</h2>
+          <p class="muted">${dateNote}. Enter today's date and the system works out the day number for you.</p>
+          ${config.startDate
+            ? formHtml('day', [['date', 'Today\'s date', 'date']], 'Set Current Date')
+              + '<p class="muted" id="dayPreview" aria-live="polite" style="margin-top:0.6rem"></p>'
+            : '<p class="muted">The dam operator has not set the start date (Day 0) yet, so dates cannot be entered.</p>'}
         </div>
 
         <div class="panel">
@@ -100,15 +108,34 @@
 
         <div class="panel">
           <h2>Report Pipeline Incident</h2>
-          <p class="muted">Notify dam engineers immediately of pipeline ruptures, abnormal pressure loss, or contamination.</p>
-          ${formHtml('fl', [['pipelineId', 'Pipeline ID (e.g. P1)'], ['reason', 'Incident Description & Severity']], 'Submit Incident Report')}
+          <p class="muted">Notify dam engineers immediately of pipeline ruptures, abnormal pressure loss, or contamination. Only working pipelines connected to your area are listed.</p>
+          ${working.length
+            ? formHtml('fl', [['pipelineId', 'Pipeline', 'select', working], ['reason', 'Incident Description & Severity']], 'Submit Incident Report')
+            : '<p class="muted">There are no working pipelines connected to your area to report.</p>'}
         </div>
 
         <!-- Data Tables -->
         <div class="panel">
+          <h2>My Maintenance Requests</h2>
+          <p class="muted">Repair tickets for pipelines connected to your area, most urgent first. The urgency score combines people left without water, whether an institution is cut off, and how long the ticket has been open.</p>
+          ${table([
+            ['Ticket', 'maintenanceId'],
+            ['Pipeline', 'pipelineId'],
+            ['Issue', 'issue'],
+            ['Reported By', 'reportedBy'],
+            ['Status', 'status'],
+            ['Opened', 'openedOn'],
+            ['Closed', 'closedOn'],
+            ['People Affected', 'peopleAffected'],
+            ['Urgency Score', 'score']
+          ], maint, null, { wrap: true })}
+        </div>
+
+        <div class="panel">
           <h2>Area Request History</h2>
           ${table([
             ['Request ID', 'requestId'],
+            ['Requested On', 'requestedOn'],
             ['Required (L)', 'requiredWater'],
             ['Emergency', 'emergency'],
             ['Priority', 'priority'],
@@ -133,6 +160,17 @@
             ? '<ul class="log">' + hist.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>'
             : '<p class="muted">No allocation events recorded for this area yet.</p>'}
         </div>
+
+        <div class="panel">
+          <h2>Day-wise Report</h2>
+          <p class="muted">Water requests, allocations and maintenance requests for your area, day by day. Leave both dates empty to see everything.</p>
+          <form class="f" id="rf">
+            <label for="rf_from"><span>From date</span><input type="date" id="rf_from" name="from"></label>
+            <label for="rf_to"><span>To date</span><input type="date" id="rf_to" name="to"></label>
+            <button class="b" type="submit">Show Report</button>
+          </form>
+        </div>
+        <div id="rout">${reportHtml(rep, false)}</div>
       `;
 
       // Helper to bind form submissions with loading/busy state
@@ -148,9 +186,31 @@
         };
       };
 
-      bind('#day', d => api('/day', 'POST', d), 'Operational day updated');
+      // The date picker shows the day number it will become before it is sent
+      const dateEl = $('#day_date');
+      if (dateEl) {
+        const preview = () => {
+          const n = daysBetween(config.startDate, dateEl.value);
+          $('#dayPreview').textContent = n === null ? '' : (n < 0
+            ? 'That date is before the start date (' + config.startDate + ').'
+            : dateEl.value + ' will be Day ' + n + '.');
+        };
+        dateEl.oninput = preview;
+      }
+
+      bind('#day', d => api('/day', 'POST', { date: d.date }), 'Current date updated');
       bind('#rq', d => api('/requests', 'POST', { ...d, areaId }), 'Water request submitted');
-      bind('#fl', d => api(`/pipelines/${encodeURIComponent(d.pipelineId)}/fail`, 'POST', { reason: d.reason, reportedBy: areaId }), 'Incident reported to engineering');
+      bind('#fl', d => api(`/pipelines/${encodeURIComponent(d.pipelineId)}/fail`, 'POST', { reason: d.reason, areaId }), 'Incident reported to engineering');
+
+      $('#rf').onsubmit = async e => {
+        e.preventDefault();
+        const f = e.target;
+        const qs = new URLSearchParams({ areaId });
+        if (f.from.value) qs.set('from', f.from.value);
+        if (f.to.value) qs.set('to', f.to.value);
+        const r = await run(() => api('/report?' + qs.toString()), null, f.querySelector('button'));
+        if (r) $('#rout').innerHTML = reportHtml(r, false);
+      };
     }
 
     load();
